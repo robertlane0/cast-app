@@ -14,6 +14,7 @@ Responsibilities:
 
 - render dashboard;
 - read/update GUI state;
+- drain `BackendEvent`s via non-blocking `try_recv`;
 - enqueue backend commands.
 
 It SHALL NOT perform blocking network or media operations.
@@ -28,13 +29,14 @@ It contains at least these logical tasks:
 
 - listens for UDP multicast discovery traffic;
 - parses receiver advertisements;
-- updates available receiver state.
+- owns the authoritative receiver list and pushes snapshots to the GUI via `BackendEvent::ReceiversUpdated`.
 
 #### Task B — Cast TLS connection
 
 - manages the receiver TLS connection;
 - sends periodic heartbeat `PING` messages;
-- handles incoming receiver status JSON.
+- handles incoming receiver status JSON;
+- performs the reconnect policy on failure.
 
 #### Task C — HTTP proxy
 
@@ -47,43 +49,54 @@ It contains at least these logical tasks:
 
 A dedicated standard thread polls display frames because OS capture calls may block.
 
-It passes captured data toward the asynchronous media pipeline through channels.
+It passes captured data toward the asynchronous media pipeline through a bounded channel (drop-oldest on overflow).
 
 ## 3. Communication boundaries
 
-The GUI SHALL communicate with the backend using asynchronous channels.
+The GUI SHALL communicate with the backend using asynchronous `tokio::sync::mpsc` unbounded channels:
 
-The overview gives the following representative channel:
+- **downward** — `UnboundedSender<AppCommand>` from the GUI to the backend;
+- **upward** — `UnboundedSender<BackendEvent>` from the backend to the GUI.
 
-```rust
-tokio::sync::mpsc::UnboundedSender<AppCommand>
+The types are defined in the GUI specification. The GUI SHALL poll the upward channel with `try_recv` each frame; it SHALL NOT await it.
+
+Channel topology:
+
+```text
+GUI (command_tx) ---AppCommand---> Backend tasks
+GUI (event_rx)   <---BackendEvent--- Backend tasks
 ```
-
-Crossbeam `mpsc` channels are also identified as an acceptable approach.
-
-The exact channel topology and message enum definitions are **TBD**.
 
 ## 4. Data ownership
 
-The design SHOULD preserve a clear ownership boundary:
+Authoritative state lives in the backend; the GUI holds a mirror updated by events.
 
 ```text
-GUI state
+GUI state (mirror)
    |
    | command message
    v
 backend task(s)
    |
-   +--> Cast engine
+   +--> Cast engine       (owns receiver list, connection, status)
    |
-   +--> Media proxy
+   +--> Media proxy       (owns active source, HTTP server)
    |
-   +--> Screen pipeline
+   +--> Screen pipeline   (owns capture thread, ffmpeg process)
 ```
 
-The overview does not define shared-state primitives, cancellation tokens or task supervision. Those are **TBD**.
+- The mDNS task owns the authoritative `Vec<CastDevice>` and broadcasts `BackendEvent::ReceiversUpdated` snapshots.
+- The Cast connection task owns connection state and emits `ReceiverConnected` / `ReceiverDisconnected` / `MediaStatus` / `Volume` events.
+- The media pipeline owns the active source and emits `StreamError`.
+- No task mutates another task's state; all state changes cross task boundaries as messages.
 
-## 5. Responsiveness requirements
+## 5. Supervision and cancellation
+
+- A supervisor task SHALL own the runtime graph. A fatal failure of the mDNS task (e.g. multicast socket setup) or the Cast connection task emits `BackendEvent::ConnectionError` and SHALL halt dependent tasks; non-fatal failures (e.g. a socket read error) SHALL be logged and the task SHALL continue or restart per its policy.
+- All tasks, the capture thread and the `ffmpeg` bridge SHALL observe a shared shutdown signal (`tokio::sync::watch` channel).
+- Dropping the GUI (application exit) SHALL trigger shutdown, releasing the TLS socket, the HTTP listener and the `ffmpeg` child process through their `Drop` implementations.
+
+## 6. Responsiveness requirements
 
 - [ ] GUI rendering remains independent of network latency.
 - [ ] mDNS parsing does not block GUI rendering.
@@ -91,3 +104,5 @@ The overview does not define shared-state primitives, cancellation tokens or tas
 - [ ] HTTP serving does not block GUI rendering.
 - [ ] Screen capture polling does not run on the GUI thread.
 - [ ] Backends communicate through explicit asynchronous boundaries.
+- [ ] The GUI polls events with `try_recv` each frame.
+- [ ] Shutdown is coordinated across all tasks and the capture thread.

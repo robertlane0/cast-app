@@ -121,6 +121,7 @@ The overview does not define:
 - exact error UX
 - exact platform support matrix
 - exact dependency versions
-- exact HTTP API schema
 
-Those remain TBD.
+The exact HTTP API schema was not defined by the overview; it is now specified in `04-media-proxy.md`.
+
+Those not listed above remain TBD.

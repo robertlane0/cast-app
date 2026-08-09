@@ -22,6 +22,14 @@
 | FR-016 | Stream encoded output through HTTP as `video/mp4`. | End-to-end pipeline test |
 | FR-017 | Expose Display, Local File and Web URL source choices. | GUI test/manual verification |
 | FR-018 | Provide Play, Pause, Stop and Volume controls. | GUI/protocol integration test |
+| FR-019 | Decode incoming CastV2 frames and tolerate unknown Protobuf fields. | Unit test |
+| FR-020 | Send media-namespace `LOAD` with the local proxy URL. | Protocol integration test |
+| FR-021 | Correlate responses to requests by `requestId`. | Unit test |
+| FR-022 | Advertise the local HTTP endpoint using a LAN IP reachable by the receiver. | HTTP/integration test |
+| FR-023 | Backend state changes reach the GUI through a non-blocking event channel. | GUI test |
+| FR-024 | Screen-capture backpressure drops the oldest frame instead of blocking. | Pipeline test |
+| FR-025 | A missing `ffmpeg` executable disables the Display source with an error. | Process test/manual |
+| FR-026 | Invalid HTTP ranges return `416`; multi-range headers are ignored with `200`. | Range-response tests |
 
 ## 2. Safety and architecture requirements
 
@@ -43,9 +51,8 @@ Test:
 - extraction of IP;
 - extraction of port;
 - extraction of friendly name;
-- malformed packet handling.
-
-Exact malformed-input policy is **TBD**.
+- malformed packet handling (discarded and logged, never panicking, per `03-cast-engine.md` §2.3);
+- compression-pointer handling.
 
 ### Protobuf/framing
 
@@ -55,7 +62,25 @@ Test:
 - string field encoding;
 - payload type encoding;
 - UTF-8 payload;
-- exact 4-byte big-endian length prefix.
+- exact 4-byte big-endian length prefix;
+- decoder round-trip for the full field set;
+- decoder tolerance of unknown fields;
+- rejection of frames over the 16 MiB limit.
+
+### Request-ID correlation
+
+Test:
+
+- monotonic `requestId` assignment;
+- response correlation by `requestId`;
+- 5-second response timeout behavior.
+
+### Event channel
+
+Test:
+
+- `BackendEvent` messages are delivered to the GUI;
+- `try_recv` polling drains all pending events without blocking.
 
 ### HTTP Range handling
 
@@ -64,8 +89,31 @@ Test:
 - valid byte range;
 - partial-content response;
 - requested byte boundaries;
-- invalid range behavior (**TBD**);
-- missing range header.
+- unsatisfiable range returns `416` with `Content-Range: bytes */<size>`;
+- multi-range header ignored, full body returned as `200`;
+- missing range header;
+- `HEAD` returns headers without a body.
+
+### LAN IP selection
+
+Test:
+
+- subnet match against the selected receiver;
+- fallback to the default-route interface;
+- loopback fallback with a warning.
+
+### MIME detection
+
+Test the extension-based map for known video/audio types and the `application/octet-stream` default.
+
+### Screen pipeline
+
+Test:
+
+- BGRA-to-RGBA conversion;
+- drop-oldest backpressure on a full channel;
+- `ffmpeg` discovery on `PATH`;
+- graceful shutdown sends EOF, then kills after the timeout.
 
 ### GUI state
 
@@ -89,13 +137,17 @@ Minimum scenarios:
 3. Send `CONNECT`.
 4. Maintain heartbeat.
 5. Launch Default Media Receiver.
-6. Serve a local file.
-7. Seek using an HTTP Range request.
-8. Proxy a remote media URL.
-9. Capture a display.
-10. Encode frames through `ffmpeg`.
-11. Stream the resulting fMP4 to the receiver.
-12. Dispatch play/pause/stop/volume commands.
+6. Correlate the `LAUNCH` response by `requestId` and extract `transportId`.
+7. Send a media-namespace `LOAD` with the local proxy URL to `transport-<sessionId>`.
+8. Serve a local file.
+9. Seek using an HTTP Range request.
+10. Proxy a remote media URL.
+11. Advertise the proxy endpoint using a LAN IP reachable by the receiver.
+12. Capture a display.
+13. Encode frames through `ffmpeg`.
+14. Stream the resulting fMP4 to the receiver.
+15. Dispatch play/pause/stop/volume commands.
+16. Verify backpressure drops frames instead of blocking capture.
 
 ## 5. Dependency audit
 
@@ -110,4 +162,13 @@ The overview does not define the project's exact dependency lockfile or CI toolc
 
 ## 6. Definition of done
 
-The implementation is considered aligned with this specification set when all stated requirements are implemented and verified, all explicit TBDs required for production are resolved, and no architecture decision violates the safety/dependency constraints.
+The implementation is considered aligned with this specification set when all stated requirements are implemented and verified and no architecture decision violates the safety/dependency constraints.
+
+TBDs required for production are resolved and reflected in these specifications. The mandatory set is:
+
+- Cast protocol: CastMessage field schema, inbound decoder, `requestId` correlation, source/destination IDs, media-namespace `LOAD` and transport controls, heartbeat/reconnect policy.
+- HTTP proxy: bind address and port, LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture.
+- Screen capture: capture crate, pixel-format conversion, resolution handling, `ffmpeg` discovery and lifecycle, backpressure, shutdown.
+- Concurrency: channel crate, event channel, data ownership, supervision and cancellation.
+
+Optional TBDs (visual design, packaging, CI, release tooling) do not block production implementation.

@@ -10,7 +10,7 @@ Mirror a selected monitor to a Chromecast while maintaining the Rust project's `
 Selected monitor
       |
       v
-Safe Rust capture (`xcap`-like crate)
+Safe Rust capture (`xcap`)
       |
       | RGBA frames
       v
@@ -35,31 +35,46 @@ Chromecast
 
 The capture implementation SHALL:
 
-- use a 100% safe Rust capture crate such as `xcap`;
-- select the monitor chosen by the GUI;
-- repeatedly capture RGBA byte frames;
+- use the 100% safe Rust `xcap` crate (version pinned in `Cargo.lock` at implementation time);
+- select the monitor chosen by the GUI, mapping the GUI display name (e.g. `DP-1`) to the xcap monitor by its `name()`;
+- repeatedly capture raw byte frames at a fixed 30 fps;
 - run capture polling on a dedicated `std::thread::spawn` thread because OS capture APIs can block.
 
-The exact capture crate/version, frame dimensions discovery, pixel layout verification, monitor enumeration API and capture error behavior are **TBD**.
+### 3.1 Pixel format
+
+`xcap` returns frames in BGRA byte order on current versions. The capture thread SHALL convert each frame to RGBA before writing it to the pipeline, matching the documented `-pix_fmt rgba` input. The exact byte order SHALL be verified against the pinned crate version at implementation time.
+
+### 3.2 Resolution
+
+- The frame size SHALL be the selected monitor's current resolution, obtained from xcap, rather than an assumed `1920x1080`.
+- If the monitor resolution changes while streaming, the pipeline SHALL restart the `ffmpeg` subprocess with the new `-s WxH`.
+
+### 3.3 Capture errors
+
+- Transient capture errors SHALL be logged and the loop SHALL continue.
+- After 5 consecutive capture failures, the pipeline SHALL stop and surface an error to the GUI.
 
 ## 4. ffmpeg subprocess
 
 Rust SHALL launch `ffmpeg` using `std::process::Command`.
 
-The overview's representative configuration is:
+The configuration is:
 
 ```text
 -f rawvideo
 -pix_fmt rgba
--s 1920x1080
+-s <WxH>
 -r 30
 -i -
 -c:v libx264
 -preset ultrafast
+-tune zerolatency
 -f mp4
 -movflags frag_keyframe+empty_moov
 pipe:1
 ```
+
+with `-s <WxH>` set from the selected monitor's resolution.
 
 The subprocess SHALL:
 
@@ -68,15 +83,30 @@ The subprocess SHALL:
 - emit fragmented MP4;
 - write the encoded stream to stdout.
 
-The exact frame size SHALL correspond to the selected monitor rather than being assumed to be `1920x1080` unless implementation requirements establish otherwise. This is an implementation detail the overview leaves open.
+### 4.1 Executable discovery
+
+- `ffmpeg` SHALL be located on the `PATH` at application start.
+- If `ffmpeg` is missing, the Display source SHALL be disabled and an explanatory error SHALL be shown in the GUI.
+
+### 4.2 Lifecycle
+
+- On stop or source switch, the bridge SHALL close the child's stdin (EOF) so `ffmpeg` finalizes the stream, then wait up to 5 seconds for exit; if it does not exit in time, the process SHALL be killed.
+- If `ffmpeg` exits unexpectedly with a non-zero status, the pipeline SHALL stop and surface an error to the GUI.
+- If the HTTP client disconnects, the screen stream session SHALL tear down the `ffmpeg` process as above.
 
 ## 5. Bridge
 
-A Tokio task SHALL continuously receive captured RGBA buffers and write them to the `ffmpeg` process stdin.
+The bridge SHALL continuously receive captured RGBA buffers and write them to the `ffmpeg` process stdin.
+
+- The capture thread -> bridge boundary SHALL use a bounded channel; when full, the oldest pending frame is dropped in favor of freshness.
+- stdin and stdout I/O SHALL run on dedicated standard threads so the Tokio runtime and GUI are never blocked.
 
 ## 6. HTTP output
 
 The HTTP server SHALL asynchronously read `ffmpeg` stdout and stream the encoded bytes as a continuous `video/mp4` response to the Chromecast.
+
+- Encoded bytes SHALL be forwarded through a bounded channel; when full, the oldest chunk is dropped (accepting a transient glitch under slow network conditions).
+- Closing the HTTP connection ends the session as described in §4.2.
 
 ## 7. Safety boundary
 
@@ -84,17 +114,22 @@ The Rust application SHALL not embed unsafe C bindings for video encoding.
 
 The native encoding implementation is intentionally isolated in the external OS-level `ffmpeg` process.
 
-## 8. Lifecycle requirements
+## 8. Audio
 
-The overview does not define complete startup, shutdown, broken-pipe, `ffmpeg`-missing, encoder-exit, backpressure, dropped-frame or capture-failure behavior. These are **TBD** and SHALL be specified before production implementation.
+Screen mirroring SHALL be video-only. Audio capture and muxing are a documented non-goal for this release.
 
 ## 9. Acceptance criteria
 
 - [ ] Capture occurs on a dedicated standard thread.
-- [ ] Captured frames are RGBA buffers.
+- [ ] Captured frames are converted to RGBA byte order.
+- [ ] Frame size is derived from the selected monitor's resolution.
 - [ ] Rust starts `ffmpeg` as a child process.
 - [ ] Frames are written to `ffmpeg` stdin.
+- [ ] `ffmpeg` is discovered on `PATH`, and a missing binary disables the Display source.
 - [ ] `ffmpeg` emits fragmented MP4 on stdout.
 - [ ] H.264 encoding is performed by the child process.
+- [ ] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error.
+- [ ] Shutdown sends EOF, then kills the process after a timeout.
+- [ ] Backpressure drops the oldest frame rather than blocking capture.
 - [ ] Encoded bytes can be streamed by the local HTTP server.
 - [ ] No unsafe Rust or unsafe C-FFI encoder integration is introduced.
