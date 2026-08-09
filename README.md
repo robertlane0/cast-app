@@ -11,8 +11,7 @@ This directory decomposes `OVERVIEW.md` into implementation-oriented Markdown sp
 - `05-screen-capture.md` — safe capture, `ffmpeg` subprocess pipeline and fMP4 streaming
 - `06-concurrency.md` — threads, Tokio tasks and channel boundaries
 - `07-requirements-and-tests.md` — consolidated requirements, acceptance criteria and test matrix
-- `08-open-questions.md` — items the overview does not specify and therefore remain TBD
 
 ## Source boundary
 
-These specifications are derived from the supplied project overview. They preserve its architecture, terminology and stated constraints. Items not established by the overview are explicitly marked **TBD** rather than being silently invented.
+These specifications are derived from the supplied project overview. They preserve its architecture, terminology and stated constraints. Items not established by the overview are specified as decisions in the documents above; no open-question register remains.

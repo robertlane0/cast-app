@@ -30,6 +30,7 @@
 | FR-024 | Screen-capture backpressure drops the oldest frame instead of blocking. | Pipeline test |
 | FR-025 | A missing `ffmpeg` executable disables the Display source with an error. | Process test/manual |
 | FR-026 | Invalid HTTP ranges return `416`; multi-range headers are ignored with `200`. | Range-response tests |
+| FR-027 | Configure the proxy port from the Settings UI. | GUI test/integration |
 
 ## 2. Safety and architecture requirements
 
@@ -124,7 +125,9 @@ Test state transitions for:
 - display selection;
 - local-file selection;
 - URL entry;
-- transport command dispatch.
+- transport command dispatch;
+- status-indicator updates from backend events;
+- proxy-port setting validation and dispatch.
 
 ## 4. Integration tests
 
@@ -158,7 +161,10 @@ The final build SHALL be checked for:
 - expected runtime dependencies;
 - availability of the external `ffmpeg` executable.
 
-The overview does not define the project's exact dependency lockfile or CI toolchain; those are **TBD**.
+Policy:
+
+- `Cargo.lock` SHALL be committed.
+- CI SHALL run `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, and `cargo build` on stable Rust across the supported OS matrix (per `01-architecture.md` §8, §9).
 
 ## 6. Definition of done
 
@@ -170,5 +176,6 @@ TBDs required for production are resolved and reflected in these specifications.
 - HTTP proxy: bind address and port, LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture.
 - Screen capture: capture crate, pixel-format conversion, resolution handling, `ffmpeg` discovery and lifecycle, backpressure, shutdown.
 - Concurrency: channel crate, event channel, data ownership, supervision and cancellation.
+- Platform: OS support matrix, toolchain, dependency pinning, `ffmpeg` install strategy, CI gate.
 
-Optional TBDs (visual design, packaging, CI, release tooling) do not block production implementation.
+No TBDs remain in this specification set; every decision is documented in its owning document.

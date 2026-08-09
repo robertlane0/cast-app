@@ -71,7 +71,15 @@ The overview identifies these implementation technologies:
 - `xcap`
 - system `ffmpeg`
 
-The exact dependency versions are **TBD**.
+### 4.1 Toolchain
+
+- The project SHALL build on stable Rust with a minimum of 1.85 (the first stable release to ship edition 2024).
+- The toolchain SHALL be pinned to the latest stable release at implementation start via a `rust-toolchain.toml` file.
+
+### 4.2 Version pinning
+
+- Exact dependency versions SHALL be pinned in `Cargo.lock`, which SHALL be committed.
+- `Cargo.toml` SHALL record major-version anchors: Tokio `1.x`, `rustls` `0.23.x`, `reqwest` `0.12.x`, and the latest stable `eframe`/`egui`, `rfd`, and `xcap` at implementation time.
 
 ## 5. Safety model
 
@@ -103,9 +111,9 @@ Chromecast <--------- Local media URL
                  screen capture + ffmpeg
 ```
 
-## 7. Explicit non-goals from the overview
+## 7. Explicit non-goals
 
-The overview does not define:
+The overview does not define the following, and they remain explicit non-goals for this release:
 
 - persistence
 - authentication UI
@@ -115,13 +123,22 @@ The overview does not define:
 - subtitles
 - DRM handling beyond proxy motivation
 - application update mechanism
-- packaging/installers
 - telemetry
 - logging format
 - exact error UX
-- exact platform support matrix
-- exact dependency versions
 
-The exact HTTP API schema was not defined by the overview; it is now specified in `04-media-proxy.md`.
+Two overview gaps are now specified elsewhere in this set: the HTTP API schema in `04-media-proxy.md`, and the platform support matrix in §8.
 
-Those not listed above remain TBD.
+## 8. Platform support
+
+- Linux (X11): supported.
+- Linux (Wayland): screen capture is not reliably available under `xcap` on Wayland sessions; the Display source SHALL be disabled with an explanatory error on Wayland, exactly as when `ffmpeg` is missing. All other functionality is unaffected.
+- Windows 10/11: supported.
+- macOS 13+: supported.
+- Anything else (e.g. BSD): unsupported.
+
+## 9. Build and release policy
+
+- Development and release builds SHALL run via `cargo build`; this release distributes source only.
+- CI SHALL gate merge on `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, and `cargo build`, running on stable Rust across the supported OS matrix when the repository is hosted on GitHub Actions.
+- Packaging, installers, signed binaries, and an application update mechanism are explicitly deferred and SHALL NOT block this release.

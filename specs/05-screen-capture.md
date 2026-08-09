@@ -40,6 +40,8 @@ The capture implementation SHALL:
 - repeatedly capture raw byte frames at a fixed 30 fps;
 - run capture polling on a dedicated `std::thread::spawn` thread because OS capture APIs can block.
 
+On Linux Wayland sessions, `xcap` capture is not reliably available; the Display source SHALL be disabled with an explanatory error per the platform policy in `01-architecture.md` §8.
+
 ### 3.1 Pixel format
 
 `xcap` returns frames in BGRA byte order on current versions. The capture thread SHALL convert each frame to RGBA before writing it to the pipeline, matching the documented `-pix_fmt rgba` input. The exact byte order SHALL be verified against the pinned crate version at implementation time.
@@ -88,11 +90,22 @@ The subprocess SHALL:
 - `ffmpeg` SHALL be located on the `PATH` at application start.
 - If `ffmpeg` is missing, the Display source SHALL be disabled and an explanatory error SHALL be shown in the GUI.
 
+Install strategy per platform (for documentation only; the app only consults `PATH`):
+
+- Linux: distro package (`ffmpeg`).
+- Windows: `winget install ffmpeg` (or an equivalent package manager), with the binary on `PATH`.
+- macOS: `brew install ffmpeg`.
+
 ### 4.2 Lifecycle
 
 - On stop or source switch, the bridge SHALL close the child's stdin (EOF) so `ffmpeg` finalizes the stream, then wait up to 5 seconds for exit; if it does not exit in time, the process SHALL be killed.
 - If `ffmpeg` exits unexpectedly with a non-zero status, the pipeline SHALL stop and surface an error to the GUI.
 - If the HTTP client disconnects, the screen stream session SHALL tear down the `ffmpeg` process as above.
+
+### 4.3 fMP4 start-of-stream validation
+
+- The baseline `-movflags frag_keyframe+empty_moov` writes the `moov` atom up-front so the receiver can begin parsing immediately.
+- This SHALL be validated against a real receiver during integration; if playback does not start, the pipeline SHALL add `default_base_moof` to `-movflags` and re-validate. The working flag set SHALL be recorded at implementation time.
 
 ## 5. Bridge
 
@@ -126,7 +139,8 @@ Screen mirroring SHALL be video-only. Audio capture and muxing are a documented 
 - [ ] Rust starts `ffmpeg` as a child process.
 - [ ] Frames are written to `ffmpeg` stdin.
 - [ ] `ffmpeg` is discovered on `PATH`, and a missing binary disables the Display source.
-- [ ] `ffmpeg` emits fragmented MP4 on stdout.
+- [ ] `ffmpeg` emits fragmented MP4 on stdout with the `moov` atom written up-front.
+- [ ] The fMP4 flag set is validated against a real receiver during integration.
 - [ ] H.264 encoding is performed by the child process.
 - [ ] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error.
 - [ ] Shutdown sends EOF, then kills the process after a timeout.

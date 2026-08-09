@@ -15,6 +15,12 @@ Specify the desktop interface and its decoupled state model.
 
 The application SHALL expose a centralized dashboard with three primary regions.
 
+### 3.0 Visual design
+
+- The UI SHALL use egui's default dark theme with no custom skinning.
+- Layout: left panel fixed at ~250 px; center panel fills the remaining width; bottom bar ~48 px high.
+- Layout proportions are functional defaults and SHALL NOT change the acceptance criteria.
+
 ### 3.1 Target Selection — left panel
 
 The panel SHALL:
@@ -72,6 +78,20 @@ Transport commands SHALL be dispatched to the selected Cast receiver.
 - Volume changes SHALL be dispatched as `AppCommand::SetVolume`, throttled to at most one message per 100 ms to avoid flooding `SET_VOLUME`.
 - Volume is a live slider; the local value SHALL be corrected from `BackendEvent::Volume` when receiver status arrives.
 
+### 3.4 Status indicators
+
+The bottom bar SHALL include a status strip rendering:
+
+- connection state: `Scanning`, `Connected <name>`, or `Disconnected` — rendered as a colored dot (amber = scanning, green = connected, red = disconnected/error) next to the state text;
+- playback state from `BackendEvent::MediaStatus`: `Idle`, `Playing`, `Paused`, or `Buffering`;
+- a transient error banner showing the most recent `BackendEvent::ConnectionError` or `StreamError`, dismissed on the next successful event or on manual dismiss.
+
+### 3.5 Settings
+
+- A Settings action (gear button in the top bar) SHALL open an egui modal window.
+- The window SHALL expose the proxy port, defaulting to `8080`, validated to the range `1024..=65535`.
+- Saving SHALL dispatch `AppCommand::SetProxyPort(u16)`; the backend SHALL rebind the HTTP listener on the new port and the advertised URL SHALL reflect the change.
+
 ## 4. State model
 
 The GUI state SHALL be decoupled from backend execution.
@@ -108,6 +128,7 @@ enum AppCommand {
     Stop,
     SetVolume(f32), // 0.0 ..= 1.0
     Mute(bool),
+    SetProxyPort(u16),
 }
 ```
 
@@ -163,5 +184,7 @@ Backend work SHALL be dispatched through asynchronous channels and handled by th
 - [ ] Play, pause, stop and volume controls dispatch backend commands.
 - [ ] Volume changes are throttled and corrected from receiver status.
 - [ ] Scanning, empty, error and disabled states are rendered.
+- [ ] Connection, playback and error status indicators render and update from backend events.
+- [ ] Settings window opens and applies the proxy port.
 - [ ] Backend events are polled non-blocking each frame.
 - [ ] GUI remains responsive while discovery, networking and media streaming are active.
