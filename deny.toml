@@ -1,0 +1,59 @@
+# cargo-deny configuration (see AGENTS.md §3.3).
+# Ban the hand-rolled-stack escape hatches and native-TLS crates; allow only
+# MPL/Apache/MIT/BSD/Unicode-3.0 licenses in the global allow list, and grant
+# per-crate exceptions to permissive licenses introduced by the pinned
+# GUI/TLS dependency stack (all OSI-approved, non-copyleft).
+
+[bans]
+deny = [
+    "rust-cast",
+    "mdns",
+    "mdns-sd",
+    "prost",
+    "prost-build",
+    "ffmpeg-sys-next",
+    "libav",
+    "libav-sys",
+    "libav-codec-sys",
+    "libavfilter-sys",
+    "libavformat-sys",
+    "libavutil-sys",
+    "libswresample-sys",
+    "libswscale-sys",
+    "native-tls",
+    "tokio-native-tls",
+]
+
+[advisories]
+# ttf-parser (via winit's sctk-adwaita theme on Linux) is unmaintained with no
+# patched version; the only consumers are GUI font rendering paths. Tracked in
+# upstream; re-review when winit/eframe migrate to skrifa.
+ignore = ["RUSTSEC-2026-0192"]
+
+[licenses]
+allow = [
+    "MPL-2.0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+# Per-crate exceptions: permissive licenses (BSL-1.0, ISC, Zlib, OFL-1.1,
+# Ubuntu-font-1.0, CDLA-Permissive-2.0) that the pinned GUI/TLS stack pulls in
+# transitively. None are copyleft.
+exceptions = [
+    { crate = "clipboard-win", allow = ["BSL-1.0"] },        # Windows clipboard via arboard
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] }, # bundled egui fonts
+    { crate = "error-code", allow = ["BSL-1.0"] },           # zbus XML stack
+    { crate = "foldhash", allow = ["Zlib"] },                # hashbrown
+    { crate = "libloading", allow = ["ISC"] },               # x11rb -> winit
+    { crate = "ring", allow = ["ISC"] },                     # "Apache-2.0 AND ISC"
+    { crate = "rustls-webpki", allow = ["ISC"] },            # rustls cert validation
+    { crate = "slotmap", allow = ["Zlib"] },                 # glow -> wgpu-hal
+    { crate = "untrusted", allow = ["ISC"] },                # ring
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] }, # reqwest rustls stack
+]
