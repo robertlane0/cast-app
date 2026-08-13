@@ -245,22 +245,31 @@ acceptance criteria pass.
 - [ ] **Gate:** `cargo test --test dns_parser_tests` green.
 
 ### Phase 3 — TLS transport (`cast/tls.rs`) ← `03-cast-engine.md` §3
-- [ ] `rustls::ClientConfig` with `ring` provider, no ALPN, no SNI.
-- [ ] Custom `ServerCertVerifier` that accepts self-signed but still completes the handshake (signature verified, chain/hostname skipped).
-- [ ] `connect(addr) -> Result<rustls::StreamOwned<...>>` with 5-second handshake timeout (tokio time).
-- [ ] `close_notify` on shutdown.
-- [ ] **Tests:** unit-test the verifier decision logic; integration test against a local self-signed test server (rustls server config + rcgen for test cert, **dev-dep only**).
-- [ ] **Gate:** `cargo test cast::tls` green.
+- [x] `rustls::ClientConfig` with `ring` provider, no ALPN, no SNI.
+- [x] Custom `ServerCertVerifier` that accepts self-signed but still completes the handshake (signature verified, chain/hostname skipped).
+- [x] `connect(addr) -> Result<rustls::StreamOwned<...>>` with 5-second handshake timeout (tokio time).
+- [x] `close_notify` on shutdown.
+- [x] **Tests:** unit-test the verifier decision logic; integration test against a local self-signed test server (rustls server config + rcgen for test cert, **dev-dep only**).
+- [x] **Gate:** `cargo test cast::tls` green.
+
+> **Lesson recorded (Phase 3):** `tokio::net::TcpStream::into_std()` leaves the
+> socket non-blocking — call `set_nonblocking(false)` before driving the
+> synchronous rustls handshake on a `spawn_blocking` worker. And synchronous
+> TLS I/O (handshake, reads) must never run directly on a tokio executor
+> task: on a single-thread runtime the blocking call freezes the runtime so
+> timers and other tasks never advance (debugged via a hang that only
+> reproduced with blocking sockets). Rules for Phase 6: all
+> `CastTlsStream` I/O goes through `spawn_blocking`/dedicated threads.
 
 ### Phase 4 — Protobuf + framing (`cast/proto.rs`, `cast/framing.rs`) ← `03-cast-engine.md` §4, §5
-- [ ] Varint LEB128 encoder/decoder.
-- [ ] Field encoders: varint, length-delimited (string, bytes).
-- [ ] `encode_cast_message(source, dest, ns, payload) -> Vec<u8>` covering fields 1, 2, 3, 4, 5, 6.
-- [ ] `decode_cast_message(bytes) -> CastMessage` with unknown-field skipping by wire type.
-- [ ] `write_frame(writer, payload)`: single write of 4-byte BE length + payload.
-- [ ] `read_frame(reader) -> Vec<u8>`: read 4 BE bytes, then exactly N bytes; reject N > 16 MiB.
-- [ ] **Tests:** golden vectors for each field; round-trip; unknown-field tolerance; 16 MiB+1 rejection; varint edge cases (0, 127, 128, u32::MAX).
-- [ ] **Gate:** `cargo test --test protobuf_tests --test framing_tests` green.
+- [x] Varint LEB128 encoder/decoder.
+- [x] Field encoders: varint, length-delimited (string, bytes).
+- [x] `encode_cast_message(source, dest, ns, payload) -> Vec<u8>` covering fields 1, 2, 3, 4, 5, 6.
+- [x] `decode_cast_message(bytes) -> CastMessage` with unknown-field skipping by wire type.
+- [x] `write_frame(writer, payload)`: single write of 4-byte BE length + payload.
+- [x] `read_frame(reader) -> Vec<u8>`: read 4 BE bytes, then exactly N bytes; reject N > 16 MiB.
+- [x] **Tests:** golden vectors for each field; round-trip; unknown-field tolerance; 16 MiB+1 rejection; varint edge cases (0, 127, 128, u32::MAX).
+- [x] **Gate:** `cargo test --test protobuf_tests --test framing_tests` green.
 
 ### Phase 5 — Request correlation + namespaces (`cast/request_id.rs`, `cast/namespaces.rs`) ← `03-cast-engine.md` §6
 - [ ] `RequestId` counter; `PendingMap` keyed by `u32` with 5s timeout per entry.

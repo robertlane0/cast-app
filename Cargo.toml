@@ -23,6 +23,7 @@ http      = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
+rcgen = "0.14.7"
 tokio-test = "0.4"
 
 [workspace]

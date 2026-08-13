@@ -17,6 +17,8 @@ fn main() -> ExitCode {
 
     tracing::info!("cast-app v{} starting", env!("CARGO_PKG_VERSION"));
 
+    cast_app::cast::tls::install_crypto_provider();
+
     // Phase 10: build the tokio runtime and launch the eframe GUI here.
     ExitCode::SUCCESS
 }

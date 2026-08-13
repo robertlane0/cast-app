@@ -28,7 +28,15 @@ deny = [
 # ttf-parser (via winit's sctk-adwaita theme on Linux) is unmaintained with no
 # patched version; the only consumers are GUI font rendering paths. Tracked in
 # upstream; re-review when winit/eframe migrate to skrifa.
-ignore = ["RUSTSEC-2026-0192"]
+# RUSTSEC-2026-0009 (time RFC 2822 stack exhaustion): affects only the
+# dev-dependency path rcgen -> time, used solely to build self-signed test
+# certificates; no user-controlled input is ever parsed. The fixed time
+# release requires Rust 1.88 (repo pins 1.85 per AGENTS.md §2.7); re-evaluate
+# when the toolchain is bumped.
+ignore = [
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0009",
+]
 
 [licenses]
 allow = [
@@ -51,6 +59,7 @@ exceptions = [
     { crate = "error-code", allow = ["BSL-1.0"] },           # zbus XML stack
     { crate = "foldhash", allow = ["Zlib"] },                # hashbrown
     { crate = "libloading", allow = ["ISC"] },               # x11rb -> winit
+    { crate = "rcgen", allow = ["ISC"] },                    # dev-only self-signed test certs
     { crate = "ring", allow = ["ISC"] },                     # "Apache-2.0 AND ISC"
     { crate = "rustls-webpki", allow = ["ISC"] },            # rustls cert validation
     { crate = "slotmap", allow = ["Zlib"] },                 # glow -> wgpu-hal
