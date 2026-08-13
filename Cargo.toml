@@ -29,11 +29,16 @@ url = "2"
 pretty_assertions = "1"
 rcgen = "0.14.7"
 tokio-test = "0.4"
+futures-util = "0.3"
 
 # Nested test files are not auto-discovered by cargo.
 [[test]]
 name = "http_e2e"
 path = "tests/integration/http_e2e.rs"
+
+[[test]]
+name = "screen_e2e"
+path = "tests/integration/screen_e2e.rs"
 
 [workspace]
 members = ["xtask"]

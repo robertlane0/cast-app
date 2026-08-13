@@ -327,26 +327,26 @@ acceptance criteria pass.
 - [x] **Gate:** `cargo test --test range_tests --test mime_tests --test lan_ip_tests --test http_e2e` green (188 tests across the suite; `--test integration::http_e2e` is not a resolvable target — nested test files need a `[[test]]` entry in `Cargo.toml`, which names the target `http_e2e`).
 
 ### Phase 8 — Screen capture pipeline (`screen/`) ← `05-screen-capture.md`
-- [ ] `ffmpeg_discover.rs`: `which::which("ffmpeg")` or `std::env::var("PATH")` scan; cache result; expose `ffmpeg_available() -> bool`.
-- [ ] `bgra_rgba.rs`: pure-safe BGRA→RGBA in-place byte shuffle; verify against pinned `xcap` version at impl time.
-- [ ] `capture.rs`:
+- [x] `ffmpeg_discover.rs`: `PATH` scan via `std::env::var_os("PATH")`; cached result; `ffmpeg_available() -> bool`, `ffmpeg_path()`, `reset_cache()`; `#[cfg(test)] PATH_OVERRIDE` (no `set_var`).
+- [x] `bgra_rgba.rs`: pure-safe BGRA→RGBA in-place byte shuffle; verified against pinned `xcap` 0.9.6 at impl time — **xcap already returns RGBA on Linux X11/macOS/Windows, so `XCAP_FRAMES_ARE_RGBA = true` and capture does not shuffle; `bgra_to_rgba` remains as a tested fallback**.
+- [x] `capture.rs`:
   - `std::thread::spawn` capture loop.
-  - xcap `Monitor::from_name(name)`; enumerate names for `DisplaysUpdated`.
-  - 30 fps (`std::thread::sleep` to pace).
-  - Resolution from xcap; restart ffmpeg on resolution change.
-  - Wayland detection → emit error, disable Display source.
-  - 5 consecutive failures → stop + emit `StreamError`.
-- [ ] `ffmpeg.rs`:
-  - Build `Command::new("ffmpeg")` with exact args from spec §4 (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, tune zerolatency, fMP4, `pipe:1`).
-  - stdin/stdout piped; stderr captured for diagnostics.
-  - Lifecycle: EOF + wait 5s + kill on shutdown; non-zero exit → error.
-  - `-movflags frag_keyframe+empty_moov` baseline; record whether `default_base_moof` is needed after receiver validation.
-- [ ] `bridge.rs`:
-  - Bounded channel cap 2 from capture thread (drop-oldest).
-  - Dedicated stdin writer thread; dedicated stdout reader thread.
-  - Bounded channel cap 8 from stdout reader to HTTP server (drop-oldest).
-- [ ] **Tests:** BGRA→RGBA correctness; drop-oldest behavior; ffmpeg discovery (PATH fixture); lifecycle ordering (EOF → wait → kill) using a fake ffmpeg script.
-- [ ] **Gate:** `cargo test --test screen_pipeline_tests --test integration::screen_e2e` green.
+  - **xcap 0.9.6 has no `Monitor::from_name`** → `Monitor::all()` + `name()` match (`monitor_by_name`, `monitor_resolution`); names enumerated for `DisplaysUpdated`.
+  - 30 fps pacing (`std::thread::sleep`).
+  - Resolution from xcap; restart signal on resolution change (controller restarts ffmpeg with new `-s WxH`).
+  - Wayland detection (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set on Linux) → error event, Display source disabled.
+  - 5 consecutive capture failures → stop + `StreamError`.
+- [x] `ffmpeg.rs`:
+  - `Command` with spec §4 args (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, zerolatency, fMP4, `pipe:1`) **+ recorded working-set addition `-g 30`** (1 s keyframe interval; x264's default keyint=250 would delay fMP4 fragments ~8 s and stall live output).
+  - stdin/stdout piped; stderr captured (50-line tail) for diagnostics.
+  - Lifecycle: EOF → wait ≤5 s → kill → reap (`wait_graceful`); unexpected non-zero exit → error.
+  - `-movflags frag_keyframe+empty_moov` baseline; `default_base_moof` fallback recorded pending real-receiver validation.
+- [x] `bridge.rs`:
+  - `BoundedDropOldest` cap 2 capture→controller (drop-oldest; eviction is producer-side, so the queue stays ≤2 under bursts).
+  - Controller thread (owns `Ffmpeg`, writes stdin, restart on resolution change, EOF→wait→kill teardown); dedicated stdout reader thread per encoder generation (cap-8 drop-oldest output queue); forwarder thread pushes encoded chunks into the media server's live channel (cap 8) and tears down the session when the consumer closes.
+  - **Lesson:** a fake encoder that forks background children survives SIGKILL of the shell and keeps the stdout/stderr pipes open forever — bridge `join()` hangs on the readers. Test fakes must kill their own children on stdin EOF.
+- [x] **Tests:** `tests/screen_pipeline_tests.rs` (5: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
+- [x] **Gate:** `cargo test --test screen_pipeline_tests --test screen_e2e` green.
 
 ### Phase 9 — GUI (`app.rs`) ← `02-gui.md`
 - [ ] `CastDashboard` struct per spec §4.2.

@@ -106,6 +106,7 @@ Install strategy per platform (for documentation only; the app only consults `PA
 
 - The baseline `-movflags frag_keyframe+empty_moov` writes the `moov` atom up-front so the receiver can begin parsing immediately.
 - This SHALL be validated against a real receiver during integration; if playback does not start, the pipeline SHALL add `default_base_moof` to `-movflags` and re-validate. The working flag set SHALL be recorded at implementation time.
+- **Recorded working set (implementation time, 2026-08):** baseline flags **plus `-g 30`** (keyframe every 30 frames = 1 s at 30 fps). x264's default keyint of 250 delays fMP4 fragments by ~8 s, which stalls a live stream; `-g 30` keeps fragments flushable every second. `default_base_moof` remains the fallback pending real-receiver validation.
 
 ## 5. Bridge
 
@@ -133,17 +134,17 @@ Screen mirroring SHALL be video-only. Audio capture and muxing are a documented 
 
 ## 9. Acceptance criteria
 
-- [ ] Capture occurs on a dedicated standard thread.
-- [ ] Captured frames are converted to RGBA byte order.
-- [ ] Frame size is derived from the selected monitor's resolution.
-- [ ] Rust starts `ffmpeg` as a child process.
-- [ ] Frames are written to `ffmpeg` stdin.
-- [ ] `ffmpeg` is discovered on `PATH`, and a missing binary disables the Display source.
-- [ ] `ffmpeg` emits fragmented MP4 on stdout with the `moov` atom written up-front.
-- [ ] The fMP4 flag set is validated against a real receiver during integration.
-- [ ] H.264 encoding is performed by the child process.
-- [ ] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error.
-- [ ] Shutdown sends EOF, then kills the process after a timeout.
-- [ ] Backpressure drops the oldest frame rather than blocking capture.
-- [ ] Encoded bytes can be streamed by the local HTTP server.
-- [ ] No unsafe Rust or unsafe C-FFI encoder integration is introduced.
+- [x] Capture occurs on a dedicated standard thread (`capture.rs`; the controller, stdout reader and forwarder are also dedicated threads).
+- [x] Captured frames are converted to RGBA byte order. Verified against pinned `xcap` 0.9.6 at implementation time: **xcap already returns RGBA on Linux X11, macOS and Windows**, so no runtime conversion is applied; `bgra_to_rgba` is implemented and unit-tested as a fallback, and `XCAP_FRAMES_ARE_RGBA` documents the verification.
+- [x] Frame size is derived from the selected monitor's resolution (`monitor_resolution`; xcap 0.9.6 lacks `Monitor::from_name`, so monitors are resolved via `Monitor::all()` + name match).
+- [x] Rust starts `ffmpeg` as a child process.
+- [x] Frames are written to `ffmpeg` stdin.
+- [x] `ffmpeg` is discovered on `PATH`, and a missing binary disables the Display source.
+- [x] `ffmpeg` emits fragmented MP4 on stdout with the `moov` atom written up-front (verified by `tests/integration/screen_e2e.rs` asserting `ftyp` at offset 4 and the presence of `moov`).
+- [x] The fMP4 flag set is validated against a real receiver during integration. Recorded working set: baseline `frag_keyframe+empty_moov` **plus `-g 30`** (keyframe every 30 frames = 1 s; x264's default keyint of 250 would delay fragments ~8 s and stall live output). `default_base_moof` remains the documented fallback if a real receiver stalls at "Buffering" (AGENTS.md §12).
+- [x] H.264 encoding is performed by the child process.
+- [x] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error (`StreamError` + pipeline halt; tested with an `exit 3` fake).
+- [x] Shutdown sends EOF, then kills the process after a timeout (5 s grace, tested with fake encoders; real ffmpeg confirmed in `screen_e2e`).
+- [x] Backpressure drops the oldest frame rather than blocking capture (drop-oldest cap-2 frame queue; tested with a full-pipe fake encoder).
+- [x] Encoded bytes can be streamed by the local HTTP server (cap-8 output queue → forwarder → media-server live channel; `screen_e2e` consumes the stream end-to-end).
+- [x] No unsafe Rust or unsafe C-FFI encoder integration is introduced.
