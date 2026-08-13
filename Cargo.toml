@@ -22,11 +22,18 @@ thiserror = "1"
 anyhow    = "1"
 bytes     = "1"
 http      = "1"
+if-addrs = "0.15.0"
+url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
 rcgen = "0.14.7"
 tokio-test = "0.4"
+
+# Nested test files are not auto-discovered by cargo.
+[[test]]
+name = "http_e2e"
+path = "tests/integration/http_e2e.rs"
 
 [workspace]
 members = ["xtask"]

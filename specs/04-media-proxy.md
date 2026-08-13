@@ -104,19 +104,19 @@ The proxy SHALL also support the encoded output produced by the screen-capture p
 
 ## 6. HTTP acceptance criteria
 
-- [ ] Local HTTP server starts asynchronously bound to `0.0.0.0:8080`.
-- [ ] The advertised LAN IP is selected from the receiver's subnet or the default route.
-- [ ] Chromecast can access the advertised local URL.
-- [ ] Local files are streamed without full-file buffering.
-- [ ] Single valid `Range` requests return `206 Partial Content` with correct `Content-Range`.
-- [ ] Invalid or unsatisfiable ranges return `416`.
-- [ ] Multi-range and missing-range requests return `200` with the full body.
-- [ ] `HEAD` requests return headers without a body.
-- [ ] MIME types are detected from the file extension.
-- [ ] Remote URL GET responses are streamed through the proxy.
-- [ ] The `Range` header is forwarded to the remote origin.
-- [ ] Remote failures return `502`.
-- [ ] Only `/stream` is routed; other paths return `404`.
-- [ ] Switching source terminates the in-flight stream.
-- [ ] Screen encoder output is exposed as continuous `video/mp4`.
-- [ ] Proxy I/O does not block the GUI thread.
+- [x] Local HTTP server starts asynchronously bound to `0.0.0.0:8080`.
+- [x] The advertised LAN IP is selected from the receiver's subnet or the default route.
+- [x] Chromecast can access the advertised local URL.
+- [x] Local files are streamed without full-file buffering.
+- [x] Single valid `Range` requests return `206 Partial Content` with correct `Content-Range`.
+- [x] Invalid or unsatisfiable ranges return `416`.
+- [x] Multi-range and missing-range requests return `200` with the full body.
+- [x] `HEAD` requests return headers without a body.
+- [x] MIME types are detected from the file extension.
+- [x] Remote URL GET responses are streamed through the proxy.
+- [x] The `Range` header is forwarded to the remote origin.
+- [x] Remote failures return `502`.
+- [x] Only `/stream` is routed; other paths return `404`.
+- [x] Switching source terminates the in-flight stream.
+- [x] Screen encoder output is exposed as continuous `video/mp4`.
+- [x] Proxy I/O does not block the GUI thread.

@@ -431,14 +431,29 @@ async fn pong_keepalive_and_media_status_events() {
     }
     let pipe = connector.last_pipe().expect("pipe created on connect");
 
-    for _ in 0..8 {
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        pipe.push_incoming(&pong_frame());
-    }
-    tokio::time::timeout(Duration::from_millis(200), events_rx.recv())
+    // Keep PONGs flowing for the whole assertion window: the reader thread
+    // polls the mock transport at ~100 ms intervals, so a bounded burst of
+    // PONGs leaves the watchdog deadline dangerously close to the end of the
+    // no-disconnect window under load. A continuous 30 ms cadence guarantees
+    // every poll finds a fresh PONG, so the watchdog is always reset well
+    // inside its 150 ms window.
+    let keepalive = tokio::spawn({
+        let pipe = pipe.clone();
+        async move {
+            loop {
+                pipe.push_incoming(&pong_frame());
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_millis(300), events_rx.recv())
         .await
         .expect_err("no disconnect while PONGs keep arriving");
 
+    // The MEDIA_STATUS frame may take one reader poll (~100 ms) to arrive,
+    // so keep PONGs flowing until the event is observed — stopping the
+    // keepalive first would let the 150 ms watchdog fire and race the
+    // assertion with a Disconnected event.
     pipe.push_incoming(&media_status_frame("PLAYING"));
     match expect_event(&mut events_rx).await {
         ConnectionEvent::MediaStatus {
@@ -447,6 +462,7 @@ async fn pong_keepalive_and_media_status_events() {
         } => {}
         other => panic!("expected playing MediaStatus, got {other:?}"),
     }
+    keepalive.abort();
 
     commands_tx.send(Command::Shutdown).unwrap();
     tokio::time::timeout(Duration::from_secs(2), task)

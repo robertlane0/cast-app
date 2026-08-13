@@ -261,15 +261,22 @@ acceptance criteria pass.
 > reproduced with blocking sockets). Rules for Phase 6: all
 > `CastTlsStream` I/O goes through `spawn_blocking`/dedicated threads.
 
-> **Lesson recorded (Phase 6):** two non-obvious concurrency bugs surfaced by
+> **Lesson recorded (Phase 6):** three non-obvious concurrency bugs surfaced by
 > the mock-transport tests. (1) **Mutex barging:** a reader thread that
 > re-locks a shared transport `Mutex` microseconds after every WouldBlock
 > poll starves a blocked writer indefinitely — the writer loses the
 > unlock→re-lock race every cycle. Fixed by sleeping ~5ms (`IDLE_READ_BACKOFF`)
 > after an idle poll, which opens a deterministic window for queued writers.
-> (2) **Executor blocking:** `#[tokio::test]` defaults to a current-thread
-> runtime; a test task blocked in a std `Condvar::wait`/`Mutex` freezes the
-> executor, so `spawn_blocking` completions are never polled. Use
+> (2) **Continuous-inbound starvation:** the 5ms idle backoff alone does not
+> protect writers when inbound data never lets the reader idle-poll — with
+> PONGs arriving continuously the reader's cycle is lock→read(instant)→re-lock
+> and a blocked writer can lose every 5ms window for hundreds of milliseconds
+> (observed: 350ms PING stalls on a 22-core box). Hardened by (a) yielding
+> `IDLE_READ_BACKOFF` after *every* read cycle, and (b) making `send_payload`
+> poll `try_lock` on a 1ms cadence (`WRITER_LOCK_RETRY`) instead of blocking
+> on the mutex. (3) **Executor blocking:** `#[tokio::test]` defaults to a
+> current-thread runtime; a test task blocked in a std `Condvar::wait`/`Mutex`
+> freezes the executor, so `spawn_blocking` completions are never polled. Use
 > `#[tokio::test(flavor = "multi_thread")]` whenever a test performs
 > blocking I/O on its own task. Also: `cfg(test)` is NOT set when the lib is
 > built for integration tests, so test doubles shared with `tests/` must not
@@ -309,15 +316,15 @@ acceptance criteria pass.
 - [x] **Gate:** `cargo test cast::connection` green (in-module gate tests) + `cargo test --test connection_tests` (integration: watchdog/exhaustion, reconnect, teardown ordering, volume round-trip, disconnected-command handling, PONG keep-alive).
 
 ### Phase 7 — Media proxy (`media/`) ← `04-media-proxy.md`
-- [ ] `mime.rs`: extension map (mp4/webm/mkv/mov/mp3/aac/m4a/flac/wav; default `application/octet-stream`).
-- [ ] `range.rs`: parse `bytes=a-b`, `bytes=a-`, `bytes=-suffix`; build `Content-Range`; classify as valid/invalid/multi/none.
-- [ ] `lan_ip.rs`: enumerate non-loopback IPv4 interfaces; match subnet containing receiver IP; fallback to default-route interface; fallback to `127.0.0.1` with `warn!`. Re-run on receiver change.
-- [ ] `server.rs`: tokio `TcpListener` on `0.0.0.0:8080` (configurable); HTTP/1.1 request line + headers; GET/HEAD only (else 405); route `/stream` only (else 404); rebind on `SetProxyPort`.
-- [ ] `local_file.rs`: open `tokio::fs::File`; 200 (full) / 206 (single range) / 416 (unsatisfiable); 64 KiB chunks; `Accept-Ranges`, `Content-Type`, `Content-Length`, `Cache-Control: no-cache`; HEAD = headers only.
-- [ ] `url_proxy.rs`: `reqwest::Client` with rustls-tls; reject userinfo URLs; forward `Range`; up to 5 redirects; 30s first-byte timeout; no overall timeout while streaming; pass through non-2xx status + body; 502 on connection failure.
-- [ ] `source.rs`: `ActiveSource { File(PathBuf) | Url(String) | Screen(monitor_name) }`; switching terminates in-flight connection via per-connection cancellation token.
-- [ ] **Tests:** MIME table; Range parser all cases; LAN IP selection (subnet/default/loopback); HTTP server end-to-end with reqwest client; 404/405/200/206/416; remote proxy 502 + Range forwarding; HEAD behavior; source switch cancels in-flight.
-- [ ] **Gate:** `cargo test --test range_tests --test mime_tests --test lan_ip_tests --test integration::http_e2e` green.
+- [x] `mime.rs`: extension map (mp4/webm/mkv/mov/mp3/aac/m4a/flac/wav; default `application/octet-stream`).
+- [x] `range.rs`: parse `bytes=a-b`, `bytes=a-`, `bytes=-suffix`; build `Content-Range`; classify as valid/invalid/multi/none.
+- [x] `lan_ip.rs`: enumerate non-loopback IPv4 interfaces; match subnet containing receiver IP; fallback to default-route interface; fallback to `127.0.0.1` with `warn!`. Re-run on receiver change.
+- [x] `server.rs`: tokio `TcpListener` on `0.0.0.0:8080` (configurable); HTTP/1.1 request line + headers; GET/HEAD only (else 405); route `/stream` only (else 404); rebind on `SetProxyPort`.
+- [x] `local_file.rs`: open `tokio::fs::File`; 200 (full) / 206 (single range) / 416 (unsatisfiable); 64 KiB chunks; `Accept-Ranges`, `Content-Type`, `Content-Length`, `Cache-Control: no-cache`; HEAD = headers only.
+- [x] `url_proxy.rs`: `reqwest::Client` with rustls-tls; reject userinfo URLs; forward `Range`; up to 5 redirects; 30s first-byte timeout; no overall timeout while streaming; pass through non-2xx status + body; 502 on connection failure.
+- [x] `source.rs`: `ActiveSource { File(PathBuf) | Url(String) | Screen(monitor_name) }`; switching terminates in-flight connection via per-connection cancellation token.
+- [x] **Tests:** MIME table; Range parser all cases; LAN IP selection (subnet/default/loopback); HTTP server end-to-end with reqwest client; 404/405/200/206/416; remote proxy 502 + Range forwarding; HEAD behavior; source switch cancels in-flight.
+- [x] **Gate:** `cargo test --test range_tests --test mime_tests --test lan_ip_tests --test http_e2e` green (188 tests across the suite; `--test integration::http_e2e` is not a resolvable target — nested test files need a `[[test]]` entry in `Cargo.toml`, which names the target `http_e2e`).
 
 ### Phase 8 — Screen capture pipeline (`screen/`) ← `05-screen-capture.md`
 - [ ] `ffmpeg_discover.rs`: `which::which("ffmpeg")` or `std::env::var("PATH")` scan; cache result; expose `ffmpeg_available() -> bool`.

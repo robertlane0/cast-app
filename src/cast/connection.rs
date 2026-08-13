@@ -38,6 +38,11 @@ pub const READ_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// every instant re-lock race — barging) can acquire it deterministically.
 const IDLE_READ_BACKOFF: Duration = Duration::from_millis(5);
 
+/// Retry cadence of the polling `try_lock` writer. A blocked mutex waiter
+/// can be starved by a reader that re-locks microseconds after every
+/// release; a polling writer wins a window the moment the reader yields.
+const WRITER_LOCK_RETRY: Duration = Duration::from_millis(1);
+
 /// Write timeout applied to the socket so teardown cannot hang on a dead
 /// peer that has stopped reading.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -374,19 +379,27 @@ fn reader_loop(
             // Clean EOF (close_notify) or connection reset: the session is
             // over; the run task decides whether to reconnect.
             Ok(0) => break,
-            Ok(n) => match accumulator.push_bytes(&buffer[..n]) {
-                Ok(frames) => {
-                    for frame in frames {
-                        if frame_tx.send(Some(frame)).is_err() {
-                            return; // run task gone
+            Ok(n) => {
+                match accumulator.push_bytes(&buffer[..n]) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            if frame_tx.send(Some(frame)).is_err() {
+                                return; // run task gone
+                            }
                         }
                     }
+                    Err(error) => {
+                        tracing::warn!(%error, "protocol error while reading frames; closing connection");
+                        break;
+                    }
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "protocol error while reading frames; closing connection");
-                    break;
-                }
-            },
+                // Yield the transport mutex to queued writers after *every*
+                // read cycle, not just idle polls. With continuous inbound
+                // traffic the read never blocks, so without this sleep a
+                // blocked writer would starve indefinitely (barging; see
+                // the WouldBlock arm below).
+                std::thread::sleep(IDLE_READ_BACKOFF);
+            }
             // Read timeout / would-block: poll shutdown state and retry.
             //
             // Sleep before re-locking: the reader re-acquires the transport
@@ -418,11 +431,28 @@ fn reader_loop(
 // ---------------------------------------------------------------------------
 
 /// Write one framed payload on a `spawn_blocking` worker (blocking socket).
+///
+/// Never blocks on the transport mutex. A reader that re-locks within
+/// microseconds of every release starves a blocked mutex waiter — the
+/// waiter loses the unlock→re-lock race each cycle. Instead, poll
+/// `try_lock` on a short cadence: the writer wins the moment the reader
+/// yields (the reader sleeps `IDLE_READ_BACKOFF` after every read cycle,
+/// so a window opens at most every few milliseconds).
 async fn send_payload(transport: &SharedTransport, payload: Vec<u8>) -> io::Result<()> {
     let transport = transport.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let mut guard = lock_transport(&transport);
-        guard.write_all(&encode_frame(&payload))
+        let bytes = encode_frame(&payload);
+        loop {
+            match transport.try_lock() {
+                Ok(mut guard) => return guard.write_all(&bytes),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(WRITER_LOCK_RETRY);
+                }
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    return error.into_inner().write_all(&bytes);
+                }
+            }
+        }
     })
     .await;
     match result {
@@ -907,166 +937,166 @@ pub async fn run<C: Connector>(
 
     loop {
         tokio::select! {
-            command = commands.recv() => {
-                match command {
-                    None => break, // all command senders dropped
-                    Some(Command::Shutdown) => {
-                        teardown_session(&mut state, &events).await;
-                        break;
-                    }
-                    Some(Command::Select(device)) => {
-                        teardown_session(&mut state, &events).await;
-                        state.reconnect = None;
-                        state.desired = Some(device.clone());
-                        if let Err(error) = establish(
-                            &mut state,
-                            device,
-                            &connector,
-                            &events,
-                            &config,
-                            shutdown.subscribe(),
-                        ).await {
-                            tracing::error!(%error, "initial connection failed");
-                            let _ = events.send(ConnectionEvent::Error(error));
-                            state.desired = None;
-                        }
-                    }
-                    Some(command) => {
-                        let handled = match state.session.as_mut() {
-                            Some(session) => handle_command(session, command).await,
-                            None => {
-                                tracing::debug!("ignoring command while disconnected");
-                                Ok(())
+                    command = commands.recv() => {
+                        match command {
+                            None => break, // all command senders dropped
+                            Some(Command::Shutdown) => {
+                                teardown_session(&mut state, &events).await;
+                                break;
                             }
-                        };
-                        if let Err(error) = handled {
-                            tracing::warn!(%error, "command write failed; treating connection as lost");
-                            connection_lost(&mut state, &events, &config).await;
-                        }
-                    }
-                }
-            }
-            frame = inbound_recv(&mut state.inbound), if state.inbound.is_some() => {
-                match frame {
-                    Some(Some(payload)) => {
-                        let mut dispatch = false;
-                        if let Some(session) = state.session.as_mut() {
-                            match session.route_inbound(payload) {
-                                InboundAction::Pong => {
-                                    if let Some(watchdog) = state.watchdog.as_mut() {
-                                        watchdog.as_mut().reset(Instant::now() + config.watchdog_timeout);
-                                    }
-                                }
-                                InboundAction::Events(events_out) => {
-                                    for event in events_out {
-                                        let _ = events.send(event);
-                                    }
-                                }
-                                InboundAction::Ignore => {}
-                            }
-                            dispatch = session.phase == Phase::Ready;
-                        }
-                        if dispatch {
-                            let dispatched = match state.session.as_mut() {
-                                Some(session) => match session.take_pending_command() {
-                                    Some(pending) => dispatch_pending(session, pending).await,
-                                    None => Ok(()),
-                                },
-                                None => Ok(()),
-                            };
-                            if let Err(error) = dispatched {
-                                tracing::warn!(%error, "queued command write failed; treating connection as lost");
-                                connection_lost(&mut state, &events, &config).await;
-                            }
-                        }
-                    }
-                    Some(None) | None => {
-                        // The reader thread exited: connection lost (or our
-                        // own teardown already took the session).
-                        if state.session.is_some() {
-                            tracing::warn!("reader exited; treating connection as lost");
-                            connection_lost(&mut state, &events, &config).await;
-                        } else {
-                            state.inbound = None;
-                        }
-                    }
-                }
-            }
-            _ = heartbeat_opt(&mut state.heartbeat), if state.heartbeat.is_some() => {
-                    let transport = state.session.as_ref().map(|session| session.transport.clone());
-                match transport {
-                    Some(transport) => {
-                        let payload = encode_cast_message(SOURCE_ID, TRANSPORT_ID, HEARTBEAT_NS, &ping());
-                        // (FR-008) PING every heartbeat interval.
-                        if let Err(error) = send_payload(&transport, payload).await {
-                                        tracing::warn!(%error, "PING write failed; treating connection as lost");
-                            connection_lost(&mut state, &events, &config).await;
-                        } else {
-                            state.heartbeat =
-                                Some(Box::pin(tokio::time::sleep(config.heartbeat_interval)));
-                        }
-                    }
-                    None => state.heartbeat = None,
-                }
-            }
-            _ = watchdog_opt(&mut state.watchdog), if state.watchdog.is_some() => {
-                if state.session.is_some() {
-                    // (FR-008) No PONG within the watchdog window: teardown
-                    // and reconnect.
-                    tracing::warn!("heartbeat watchdog fired; no PONG received");
-                    connection_lost(&mut state, &events, &config).await;
-                } else {
-                    state.watchdog = None;
-                }
-            }
-            _ = reconnect_delay(&mut state.reconnect), if state.reconnect.is_some() => {
-                if let Some(mut reconnect_state) = state.reconnect.take() {
-                    let device = reconnect_state.device;
-                    match establish(
-                        &mut state,
-                        device.clone(),
-                        &connector,
-                        &events,
-                        &config,
-                        shutdown.subscribe(),
-                    ).await {
-                        Ok(()) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                attempt = reconnect_state.attempts + 1,
-                                "reconnect attempt failed",
-                            );
-                            match reconnect_state.backoff.next() {
-                                Some(delay) => {
-                                    state.reconnect = Some(Reconnect {
-                                        delay: Box::pin(tokio::time::sleep(delay)),
-                                        device,
-                                        backoff: reconnect_state.backoff,
-                                        attempts: reconnect_state.attempts + 1,
-                                    });
-                                }
-                                None => {
-                                    let _ = events.send(ConnectionEvent::Error(
-                                        ConnectionError::ReconnectExhausted {
-                                            name: device.name,
-                                            addr: device.addr,
-                                            attempts: reconnect_state.attempts + 1,
-                                        },
-                                    ));
+                            Some(Command::Select(device)) => {
+                                teardown_session(&mut state, &events).await;
+                                state.reconnect = None;
+                                state.desired = Some(device.clone());
+                                if let Err(error) = establish(
+                                    &mut state,
+                                    device,
+                                    &connector,
+                                    &events,
+                                    &config,
+                                    shutdown.subscribe(),
+                                ).await {
+                                    tracing::error!(%error, "initial connection failed");
+                                    let _ = events.send(ConnectionEvent::Error(error));
                                     state.desired = None;
                                 }
                             }
+                            Some(command) => {
+                                let handled = match state.session.as_mut() {
+                                    Some(session) => handle_command(session, command).await,
+                                    None => {
+                                        tracing::debug!("ignoring command while disconnected");
+                                        Ok(())
+                                    }
+                                };
+                                if let Err(error) = handled {
+                                    tracing::warn!(%error, "command write failed; treating connection as lost");
+                                    connection_lost(&mut state, &events, &config).await;
+                                }
+                            }
                         }
                     }
+                    frame = inbound_recv(&mut state.inbound), if state.inbound.is_some() => {
+                        match frame {
+                            Some(Some(payload)) => {
+                                let mut dispatch = false;
+                                if let Some(session) = state.session.as_mut() {
+                                    match session.route_inbound(payload) {
+                                        InboundAction::Pong => {
+                                            if let Some(watchdog) = state.watchdog.as_mut() {
+                                                watchdog.as_mut().reset(Instant::now() + config.watchdog_timeout);
+                                            }
+                                        }
+                                        InboundAction::Events(events_out) => {
+                                            for event in events_out {
+                                                let _ = events.send(event);
+                                            }
+                                        }
+                                        InboundAction::Ignore => {}
+                                    }
+                                    dispatch = session.phase == Phase::Ready;
+                                }
+                                if dispatch {
+                                    let dispatched = match state.session.as_mut() {
+                                        Some(session) => match session.take_pending_command() {
+                                            Some(pending) => dispatch_pending(session, pending).await,
+                                            None => Ok(()),
+                                        },
+                                        None => Ok(()),
+                                    };
+                                    if let Err(error) = dispatched {
+                                        tracing::warn!(%error, "queued command write failed; treating connection as lost");
+                                        connection_lost(&mut state, &events, &config).await;
+                                    }
+                                }
+                            }
+                            Some(None) | None => {
+                                // The reader thread exited: connection lost (or our
+                                // own teardown already took the session).
+                                if state.session.is_some() {
+                                    tracing::warn!("reader exited; treating connection as lost");
+                                    connection_lost(&mut state, &events, &config).await;
+                                } else {
+                                    state.inbound = None;
+                                }
+                            }
+                        }
+                    }
+        _ = heartbeat_opt(&mut state.heartbeat), if state.heartbeat.is_some() => {
+                            let transport = state.session.as_ref().map(|session| session.transport.clone());
+                        match transport {
+                            Some(transport) => {
+                                let payload = encode_cast_message(SOURCE_ID, TRANSPORT_ID, HEARTBEAT_NS, &ping());
+                                // (FR-008) PING every heartbeat interval.
+                                if let Err(error) = send_payload(&transport, payload).await {
+                                    tracing::warn!(%error, "PING write failed; treating connection as lost");
+                                    connection_lost(&mut state, &events, &config).await;
+                                } else {
+                                    state.heartbeat =
+                                        Some(Box::pin(tokio::time::sleep(config.heartbeat_interval)));
+                                }
+                            }
+                            None => state.heartbeat = None,
+                        }
+                    }
+                    _ = watchdog_opt(&mut state.watchdog), if state.watchdog.is_some() => {
+                        if state.session.is_some() {
+                            // (FR-008) No PONG within the watchdog window: teardown
+                            // and reconnect.
+                            tracing::warn!("heartbeat watchdog fired; no PONG received");
+                            connection_lost(&mut state, &events, &config).await;
+                        } else {
+                            state.watchdog = None;
+                        }
+                    }
+                    _ = reconnect_delay(&mut state.reconnect), if state.reconnect.is_some() => {
+                        if let Some(mut reconnect_state) = state.reconnect.take() {
+                            let device = reconnect_state.device;
+                            match establish(
+                                &mut state,
+                                device.clone(),
+                                &connector,
+                                &events,
+                                &config,
+                                shutdown.subscribe(),
+                            ).await {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        %error,
+                                        attempt = reconnect_state.attempts + 1,
+                                        "reconnect attempt failed",
+                                    );
+                                    match reconnect_state.backoff.next() {
+                                        Some(delay) => {
+                                            state.reconnect = Some(Reconnect {
+                                                delay: Box::pin(tokio::time::sleep(delay)),
+                                                device,
+                                                backoff: reconnect_state.backoff,
+                                                attempts: reconnect_state.attempts + 1,
+                                            });
+                                        }
+                                        None => {
+                                            let _ = events.send(ConnectionEvent::Error(
+                                                ConnectionError::ReconnectExhausted {
+                                                    name: device.name,
+                                                    addr: device.addr,
+                                                    attempts: reconnect_state.attempts + 1,
+                                                },
+                                            ));
+                                            state.desired = None;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed(), if !*shutdown_rx.borrow() => {
+                        tracing::info!("shutdown requested; tearing down connection");
+                        teardown_session(&mut state, &events).await;
+                        break;
+                    }
                 }
-            }
-            _ = shutdown_rx.changed(), if !*shutdown_rx.borrow() => {
-                tracing::info!("shutdown requested; tearing down connection");
-                teardown_session(&mut state, &events).await;
-                break;
-            }
-        }
 
         // Reap requests that exceeded their response timeout (§6.0).
         if let Some(session) = state.session.as_mut() {
