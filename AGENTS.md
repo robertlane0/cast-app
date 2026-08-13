@@ -261,6 +261,20 @@ acceptance criteria pass.
 > reproduced with blocking sockets). Rules for Phase 6: all
 > `CastTlsStream` I/O goes through `spawn_blocking`/dedicated threads.
 
+> **Lesson recorded (Phase 6):** two non-obvious concurrency bugs surfaced by
+> the mock-transport tests. (1) **Mutex barging:** a reader thread that
+> re-locks a shared transport `Mutex` microseconds after every WouldBlock
+> poll starves a blocked writer indefinitely — the writer loses the
+> unlock→re-lock race every cycle. Fixed by sleeping ~5ms (`IDLE_READ_BACKOFF`)
+> after an idle poll, which opens a deterministic window for queued writers.
+> (2) **Executor blocking:** `#[tokio::test]` defaults to a current-thread
+> runtime; a test task blocked in a std `Condvar::wait`/`Mutex` freezes the
+> executor, so `spawn_blocking` completions are never polled. Use
+> `#[tokio::test(flavor = "multi_thread")]` whenever a test performs
+> blocking I/O on its own task. Also: `cfg(test)` is NOT set when the lib is
+> built for integration tests, so test doubles shared with `tests/` must not
+> be `#[cfg(test)]`-gated.
+
 ### Phase 4 — Protobuf + framing (`cast/proto.rs`, `cast/framing.rs`) ← `03-cast-engine.md` §4, §5
 - [x] Varint LEB128 encoder/decoder.
 - [x] Field encoders: varint, length-delimited (string, bytes).
@@ -285,14 +299,14 @@ acceptance criteria pass.
 - [x] **Gate:** `cargo test --test request_id_tests` green.
 
 ### Phase 6 — Connection lifecycle (`cast/connection.rs`) ← `03-cast-engine.md` §7
-- [ ] State machine: `Disconnected → Connecting → Connected → Launching → Ready → Streaming → Teardown`.
-- [ ] Heartbeat task: PING every 5s; PONG watchdog 10s → teardown + reconnect.
-- [ ] Reconnect policy: exponential backoff per `util/retry.rs`, max 5 attempts; surface `ConnectionError` to GUI when exhausted.
-- [ ] Inbound JSON router: PONG, RECEIVER_STATUS, MEDIA_STATUS.
-- [ ] Public API: `select()`, `launch_default_receiver()`, `load(url, stream_type)`, `play()`, `pause()`, `stop()`, `set_volume(level, muted)`, `shutdown()`.
-- [ ] Teardown sequence: `STOP` → `STOP_APP` → `close_notify` → close socket.
-- [ ] **Tests:** state transitions with a mock TLS stream; heartbeat watchdog fires; reconnect backoff; teardown ordering.
-- [ ] **Gate:** `cargo test cast::connection` green.
+- [x] State machine: `Disconnected → Connecting → Connected → Launching → Ready → Streaming → Teardown`.
+- [x] Heartbeat task: PING every 5s; PONG watchdog 10s → teardown + reconnect.
+- [x] Reconnect policy: exponential backoff per `util/retry.rs`, max 5 attempts; surface `ConnectionError` to GUI when exhausted.
+- [x] Inbound JSON router: PONG, RECEIVER_STATUS, MEDIA_STATUS.
+- [x] Public API: `select()`, `launch_default_receiver()`, `load(url, stream_type)`, `play()`, `pause()`, `stop()`, `set_volume(level, muted)`, `shutdown()`.
+- [x] Teardown sequence: `STOP` → `STOP_APP` → `close_notify` → close socket.
+- [x] **Tests:** state transitions with a mock TLS stream; heartbeat watchdog fires; reconnect backoff; teardown ordering.
+- [x] **Gate:** `cargo test cast::connection` green (in-module gate tests) + `cargo test --test connection_tests` (integration: watchdog/exhaustion, reconnect, teardown ordering, volume round-trip, disconnected-command handling, PONG keep-alive).
 
 ### Phase 7 — Media proxy (`media/`) ← `04-media-proxy.md`
 - [ ] `mime.rs`: extension map (mp4/webm/mkv/mov/mp3/aac/m4a/flac/wav; default `application/octet-stream`).
