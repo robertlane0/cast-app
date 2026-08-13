@@ -272,17 +272,17 @@ acceptance criteria pass.
 - [x] **Gate:** `cargo test --test protobuf_tests --test framing_tests` green.
 
 ### Phase 5 — Request correlation + namespaces (`cast/request_id.rs`, `cast/namespaces.rs`) ← `03-cast-engine.md` §6
-- [ ] `RequestId` counter; `PendingMap` keyed by `u32` with 5s timeout per entry.
-- [ ] JSON builders (using `serde_json::json!`):
+- [x] `RequestId` counter; `PendingMap` keyed by `u32` with 5s timeout per entry.
+- [x] JSON builders (using `serde_json::json!`):
   - Connection: `{"type":"CONNECT"}`
   - Heartbeat: `{"type":"PING"}`
   - Receiver: `LAUNCH {appId:"CC1AD845"}`, `GET_STATUS`, `SET_VOLUME {volume:{level,muted}}`, `STOP_APP {sessionId}`
   - Media: `LOAD {media:{contentId,contentType,streamType},autoplay,currentTime}`, `PLAY`, `PAUSE`, `STOP`
-- [ ] Response parsers: `RECEIVER_STATUS` → `(transportId, sessionId, volume)`, `MEDIA_STATUS` → `(playerState, idleReason)`, `PONG` → heartbeat reset.
-- [ ] Source/destination ID table per spec §6.0.
-- [ ] `streamType`: `BUFFERED` for file/URL, `LIVE` for screen.
-- [ ] **Tests:** monotonic IDs; correlation hit/miss; 5s timeout fires; JSON builders produce exact bytes (snapshot tests); parsers tolerate extra fields.
-- [ ] **Gate:** `cargo test --test request_id_tests` green.
+- [x] Response parsers: `RECEIVER_STATUS` → `(transportId, sessionId, volume)`, `MEDIA_STATUS` → `(playerState, idleReason)`, `PONG` → heartbeat reset.
+- [x] Source/destination ID table per spec §6.0.
+- [x] `streamType`: `BUFFERED` for file/URL, `LIVE` for screen.
+- [x] **Tests:** monotonic IDs; correlation hit/miss; 5s timeout fires; JSON builders produce exact bytes (snapshot tests); parsers tolerate extra fields.
+- [x] **Gate:** `cargo test --test request_id_tests` green.
 
 ### Phase 6 — Connection lifecycle (`cast/connection.rs`) ← `03-cast-engine.md` §7
 - [ ] State machine: `Disconnected → Connecting → Connected → Launching → Ready → Streaming → Teardown`.
