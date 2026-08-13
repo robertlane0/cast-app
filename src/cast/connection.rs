@@ -120,14 +120,16 @@ fn lock_transport(transport: &Mutex<dyn Transport>) -> MutexGuard<'_, dyn Transp
 /// Establishes the TLS transport to a receiver address. Pluggable so tests
 /// can substitute a mock transport.
 ///
-/// All implementations in this crate (real and mock) produce `Send` futures,
-/// so the trait stays usable with `tokio::spawn`; the lint is allowed
-/// deliberately for this crate-internal trait.
-#[allow(async_fn_in_trait)]
+/// The returned future is `Send` so `run` (and therefore the whole cast
+/// task) can be spawned with `tokio::spawn` from a generic context; every
+/// implementation in this crate (real and mock) satisfies this.
 pub trait Connector: Send + Sync + 'static {
     /// Connect and return a shared transport. The reader thread and the
     /// `spawn_blocking` writers lock it for each I/O operation.
-    async fn connect(&self, addr: SocketAddr) -> Result<SharedTransport, TlsError>;
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = Result<SharedTransport, TlsError>> + Send;
 }
 
 /// Real connector: TCP + rustls handshake via [`tls::connect`]
@@ -1122,15 +1124,25 @@ impl CastConnection {
     /// Spawn the connection task on the current tokio runtime with default
     /// timers ([`ConnectionConfig::default`]).
     pub fn start(events: mpsc::UnboundedSender<ConnectionEvent>, shutdown: Shutdown) -> Self {
+        Self::start_with_handle(events, shutdown, TlsConnector).0
+    }
+
+    /// Spawn the connection task with an explicit connector, returning the
+    /// task handle so the runtime supervisor can await teardown completion.
+    pub fn start_with_handle<C: Connector>(
+        events: mpsc::UnboundedSender<ConnectionEvent>,
+        shutdown: Shutdown,
+        connector: C,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
         let (commands, receiver) = mpsc::unbounded_channel();
-        tokio::spawn(run(
+        let handle = tokio::spawn(run(
             receiver,
             events,
             shutdown,
-            TlsConnector,
+            connector,
             ConnectionConfig::default(),
         ));
-        Self { commands }
+        (Self { commands }, handle)
     }
 
     /// Select (or re-select) a receiver; tears down any current session.

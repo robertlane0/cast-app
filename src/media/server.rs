@@ -63,21 +63,30 @@ impl MediaServer {
     /// Spawn the media-server task on the current tokio runtime, binding
     /// `port` (`04-media-proxy.md` §2; port 0 picks an ephemeral port).
     pub fn start(shutdown: Shutdown, port: u16) -> Self {
+        Self::start_with_handle(shutdown, port).0
+    }
+
+    /// Spawn the media-server task, returning the task handle so the runtime
+    /// supervisor can await listener release during shutdown.
+    pub fn start_with_handle(shutdown: Shutdown, port: u16) -> (Self, tokio::task::JoinHandle<()>) {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (port_tx, bound_port) = watch::channel(0);
         let (generation_tx, _) = watch::channel(0u64);
-        tokio::spawn(run(
+        let handle = tokio::spawn(run(
             receiver,
             shutdown,
             port,
             port_tx,
             generation_tx.clone(),
         ));
-        Self {
-            commands,
-            bound_port,
-            generation: generation_tx,
-        }
+        (
+            Self {
+                commands,
+                bound_port,
+                generation: generation_tx,
+            },
+            handle,
+        )
     }
 
     /// Switch the active source, aborting all in-flight `/stream`

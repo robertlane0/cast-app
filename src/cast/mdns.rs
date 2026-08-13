@@ -8,7 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc::UnboundedSender, watch};
 
 use crate::state::{BackendEvent, CastDevice};
 use crate::util::shutdown::Shutdown;
@@ -127,11 +127,35 @@ pub fn bind_socket() -> std::io::Result<UdpSocket> {
 /// after [`MISSED_CYCLES_TO_EXPIRE`] missed cycles, and push snapshots to the
 /// GUI via `BackendEvent::ReceiversUpdated` (`03-cast-engine.md` §2.5).
 ///
+/// `rescan` triggers an immediate re-query outside the interval cadence
+/// (the GUI Error-state retry action, `02-gui.md` §3.1).
+///
 /// Send/receive errors are logged and the loop continues.
 pub async fn run(
     socket: std::net::UdpSocket,
-    shutdown: &Shutdown,
+    shutdown: Shutdown,
     event_tx: UnboundedSender<BackendEvent>,
+    rescan: watch::Receiver<u8>,
+) {
+    run_with_dest(
+        socket,
+        shutdown,
+        event_tx,
+        rescan,
+        SocketAddr::new(IpAddr::V4(MDNS_ADDR), MDNS_PORT),
+    )
+    .await
+}
+
+/// Same as [`run`] with an explicit query destination. Production always
+/// targets the mDNS multicast group; unit tests point the query at a local
+/// sniffer socket so the rescan path is observable without multicast.
+pub(crate) async fn run_with_dest(
+    socket: std::net::UdpSocket,
+    shutdown: Shutdown,
+    event_tx: UnboundedSender<BackendEvent>,
+    mut rescan: watch::Receiver<u8>,
+    query_dest: SocketAddr,
 ) {
     let socket = match tokio::net::UdpSocket::from_std(socket) {
         Ok(socket) => socket,
@@ -154,10 +178,19 @@ pub async fn run(
                 }
             }
             _ = interval.tick() => {
-                if let Err(err) = socket.send_to(&build_ptr_query(), (MDNS_ADDR, MDNS_PORT)).await {
+                if let Err(err) = socket.send_to(&build_ptr_query(), query_dest).await {
                     tracing::warn!("mDNS query send failed: {err}");
                 }
                 expire_cycle(&mut devices, &event_tx);
+            }
+            changed = rescan.changed() => {
+                if changed.is_err() {
+                    // The rescan sender is gone (supervisor exited): stop.
+                    break;
+                }
+                if let Err(err) = socket.send_to(&build_ptr_query(), query_dest).await {
+                    tracing::warn!("mDNS rescan query send failed: {err}");
+                }
             }
             result = socket.recv_from(&mut buf) => {
                 match result {
@@ -533,5 +566,65 @@ impl<'a> Parser<'a> {
             ttl,
             rdata,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A rescan bump must trigger an immediate PTR query (the GUI Error-state
+    /// retry action, `02-gui.md` §3.1), outside the 10 s interval cadence.
+    /// The query destination is pointed at a local sniffer socket so the
+    /// test observes the wire without multicast.
+    #[tokio::test]
+    async fn rescan_bump_triggers_an_immediate_query() {
+        let control = UdpSocket::bind(("127.0.0.1", 0)).expect("bind control");
+        control.set_nonblocking(true).expect("nonblocking");
+        let sniffer = UdpSocket::bind(("127.0.0.1", 0)).expect("bind sniffer");
+        sniffer.set_nonblocking(true).expect("nonblocking");
+        let dest = sniffer.local_addr().expect("sniffer addr");
+
+        let (rescan_tx, rescan_rx) = watch::channel(0u8);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let shutdown = Shutdown::new();
+        let task = tokio::spawn(run_with_dest(
+            control,
+            shutdown.clone(),
+            event_tx,
+            rescan_rx,
+            dest,
+        ));
+
+        // Before any tick (10 s) or rescan, nothing has been sent.
+        let mut buf = [0u8; 4096];
+        assert!(
+            sniffer.recv_from(&mut buf).is_err(),
+            "no query before the first tick or rescan"
+        );
+
+        rescan_tx.send(1).expect("rescan send");
+        let (len, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match sniffer.recv_from(&mut buf) {
+                    Ok(result) => return result,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("rescan must trigger an immediate query");
+        assert_eq!(
+            &buf[..len],
+            &build_ptr_query(),
+            "rescan sends the PTR query"
+        );
+
+        shutdown.trigger();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("discovery loop exits on shutdown")
+            .expect("discovery loop did not panic");
     }
 }

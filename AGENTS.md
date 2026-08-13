@@ -366,13 +366,15 @@ acceptance criteria pass.
 > **Lessons recorded (Phase 9):** (1) **Spec §3.1 requires a retry action but §4.1's enum had no rescan command** — added `AppCommand::Rescan` to `state.rs` and the spec enum; Phase 10 must map it to an immediate mDNS re-query. (2) **eframe 0.36 changed the `App` trait** — `update` is gone; implement `ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)`, and panels are the unified `egui::Panel::left/top/bottom` with `exact_size(...)` (no more `SidePanel`/`TopBottomPanel`, no `resizable` on top/bottom by default). (3) **`futures_util::poll!` is `async`-only** (gated behind the `async-await` feature) — cannot be used on the GUI thread; poll the `rfd::AsyncFileDialog` future manually with `std::task::Waker::noop()` + `Context::from_waker`, re-polling every frame (`Pin<Box<dyn Future + Send>>` is `Unpin`, so `Pin::new(&mut *fut).poll(&mut cx)` works). (4) **Discovery Error state is driven by `BackendEvent::ConnectionError`** while the receiver list is empty — the Phase 2 contract surfaces fatal mDNS setup errors via `ConnectionError`. (5) Keep `futures-util` a dev-dependency only; the GUI needs no main-dep addition.
 
 ### Phase 10 — Runtime & supervisor (`runtime.rs`) ← `06-concurrency.md`
-- [ ] Build `tokio::runtime::Runtime::new()` (multi-threaded).
-- [ ] Spawn Task A (mDNS), Task B (Cast), Task C (HTTP); spawn capture thread via `std::thread::spawn`.
-- [ ] Supervisor task owns `Shutdown` token; fatal mDNS or Cast failure → `ConnectionError` + halt dependents.
-- [ ] Aggregate backend → GUI through a single `UnboundedSender<BackendEvent>`.
-- [ ] On app exit: trigger shutdown → drop runtime → drop TLS socket, HTTP listener, ffmpeg child via `Drop`.
-- [ ] **Tests:** shutdown ordering (HTTP stops accepting → Cast closes → mDNS stops → capture thread joins → ffmpeg killed); event aggregation.
-- [ ] **Gate:** `cargo test runtime` green; manual: quit app, verify no orphan `ffmpeg` process.
+- [x] Build `tokio::runtime::Runtime::new()` (multi-threaded).
+- [x] Spawn Task A (mDNS), Task B (Cast), Task C (HTTP); spawn capture thread via `std::thread::spawn`.
+- [x] Supervisor task owns `Shutdown` token; fatal mDNS or Cast failure → `ConnectionError` + halt dependents.
+- [x] Aggregate backend → GUI through a single `UnboundedSender<BackendEvent>`.
+- [x] On app exit: trigger shutdown → drop runtime → drop TLS socket, HTTP listener, ffmpeg child via `Drop`.
+- [x] **Tests:** shutdown ordering (HTTP stops accepting → Cast closes → mDNS stops → capture thread joins → ffmpeg killed); event aggregation.
+- [x] **Gate:** `cargo test runtime` green; manual: quit app, verify no orphan `ffmpeg` process.
+
+> **Lessons recorded (Phase 10):** (1) **`watch::Sender::send` self-deadlocks when a `Ref` from `borrow()` is still alive** — `send` (via `send_replace`) takes the value write-lock while the outstanding `Ref` holds the read-lock on the same `RwLock`. `self.rescan.send(self.rescan.borrow() + 1)` froze the supervisor task for good (found via a `fatal_mdns` runtime test hang; masked earlier because test mDNS tasks panicked at spawn and dropped their receivers, and tokio only errors when `receiver_count() == 0`). Always drop the `Ref` before `send`/`send_replace`. (2) **tokio 1.53 `UdpSocket::from_std` panics on a blocking socket** — "Registering a blocking socket with the tokio runtime is unsupported" (tokio-rs/tokio#7172). Every socket injected into the backend (tests' discovery socket, the mdns sniffer socket) must be `set_nonblocking(true)` first. (3) **`Backend::shutdown` must never run inside a tokio runtime** — `runtime.block_on` panics; runtime tests are plain `#[test]`, and a panic that skips `backend.shutdown()` leaves the `Runtime::drop` blocking forever (drop waits for all tasks). (4) **The cast task auto-launches**: `LOAD` in `Phase::Connected` sends `LAUNCH` first and queues the LOAD until `Ready` — integration tests must push a `RECEIVER_STATUS` to see the LOAD on the wire.
 
 ### Phase 11 — Integration tests + CI
 - [ ] `tests/integration/http_e2e.rs`: spin server in-process, exercise all Range cases with `reqwest`.

@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
 //! cast-app entrypoint: pre-logging startup banner, tracing initialization,
-//! and the eframe GUI launch. The backend task wiring lives in Phase 10
-//! (`runtime.rs`); until then the dashboard runs against inert channels.
+//! tokio runtime + backend supervisor startup, and the eframe GUI launch.
+//! After the window closes the backend performs the coordinated shutdown
+//! (HTTP listener → Cast session → mDNS → capture/ffmpeg; `06-concurrency.md`
+//! §5).
 
 fn main() -> eframe::Result {
     println!("cast-app v{}", env!("CARGO_PKG_VERSION"));
@@ -18,12 +20,7 @@ fn main() -> eframe::Result {
 
     cast_app::cast::tls::install_crypto_provider();
 
-    let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-    // Phase 10: hand these to the runtime supervisor's tasks. Until then the
-    // channel endpoints stay alive so the GUI dispatches and drains cleanly.
-    let _command_rx = command_rx;
-    let _event_tx = event_tx;
+    let (backend, command_tx, event_rx) = cast_app::runtime::Backend::start();
 
     let dashboard = cast_app::app::CastDashboard::new(command_tx, event_rx);
     let options = eframe::NativeOptions {
@@ -33,9 +30,16 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "cast-app",
         options,
         Box::new(move |_cc| Ok(Box::new(dashboard))),
-    )
+    );
+
+    // The GUI (and its command sender) is gone: stop the backend and wait
+    // for every task and thread to wind down.
+    backend.shutdown();
+    tracing::info!("cast-app exited cleanly");
+
+    result
 }
