@@ -40,6 +40,8 @@ pub enum AppCommand {
     SetVolume(f32), // 0.0 ..= 1.0
     Mute(bool),
     SetProxyPort(u16),
+    /// Re-run mDNS discovery (GUI Error-state retry action, `02-gui.md` §3.1).
+    Rescan,
 }
 
 /// Events received from the backend over the unbounded event channel

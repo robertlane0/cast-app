@@ -129,6 +129,7 @@ enum AppCommand {
     SetVolume(f32), // 0.0 ..= 1.0
     Mute(bool),
     SetProxyPort(u16),
+    Rescan, // re-run mDNS discovery (GUI Error-state retry action, §3.1)
 }
 ```
 
@@ -174,17 +175,17 @@ Backend work SHALL be dispatched through asynchronous channels and handled by th
 
 ## 6. GUI acceptance criteria
 
-- [ ] Dashboard renders on the main thread.
-- [ ] Receiver list updates without blocking UI rendering.
-- [ ] User can select a receiver.
-- [ ] User can switch among Display, Local File and Web URL source tabs.
-- [ ] Display tab exposes available monitors.
-- [ ] Local File tab invokes a native picker with media-type filters.
-- [ ] Web URL tab accepts a validated remote media URL.
-- [ ] Play, pause, stop and volume controls dispatch backend commands.
-- [ ] Volume changes are throttled and corrected from receiver status.
-- [ ] Scanning, empty, error and disabled states are rendered.
-- [ ] Connection, playback and error status indicators render and update from backend events.
-- [ ] Settings window opens and applies the proxy port.
-- [ ] Backend events are polled non-blocking each frame.
-- [ ] GUI remains responsive while discovery, networking and media streaming are active.
+- [x] Dashboard renders on the main thread.
+- [x] Receiver list updates without blocking UI rendering.
+- [x] User can select a receiver.
+- [x] User can switch among Display, Local File and Web URL source tabs.
+- [x] Display tab exposes available monitors.
+- [x] Local File tab invokes a native picker with media-type filters.
+- [x] Web URL tab accepts a validated remote media URL.
+- [x] Play, pause, stop and volume controls dispatch backend commands.
+- [x] Volume changes are throttled and corrected from receiver status.
+- [x] Scanning, empty, error and disabled states are rendered.
+- [x] Connection, playback and error status indicators render and update from backend events.
+- [x] Settings window opens and applies the proxy port.
+- [x] Backend events are polled non-blocking each frame.
+- [x] GUI remains responsive while discovery, networking and media streaming are active.

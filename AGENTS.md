@@ -349,19 +349,21 @@ acceptance criteria pass.
 - [x] **Gate:** `cargo test --test screen_pipeline_tests --test screen_e2e` green.
 
 ### Phase 9 — GUI (`app.rs`) ← `02-gui.md`
-- [ ] `CastDashboard` struct per spec §4.2.
-- [ ] Left panel (~250 px): receiver list with `Scanning` / `No receivers found` / `Error+retry` states; row = name + IP:port.
-- [ ] Center panel: tabbed `Display` / `Local File` / `Web URL`.
+- [x] `CastDashboard` struct per spec §4.2.
+- [x] Left panel (~250 px): receiver list with `Scanning` / `No receivers found` / `Error+retry` states; row = name + IP:port.
+- [x] Center panel: tabbed `Display` / `Local File` / `Web URL`.
   - Display: dropdown from `DisplaysUpdated`; disabled when no monitors or ffmpeg missing.
   - Local File: `rfd::AsyncFileDialog` with media-type filters.
   - Web URL: text input; Apply disabled until `http://` / `https://` absolute URL with host parses.
-- [ ] Bottom bar (~48 px): Play / Pause / Stop (disabled per spec rules); Volume slider 0..=100 → 0.0..=1.0; mute toggle; throttled to 1 message / 100 ms; corrected from `BackendEvent::Volume`.
-- [ ] Status strip: colored dot (amber/green/red); playback state; transient error banner with manual dismiss.
-- [ ] Settings modal: proxy port input validated `1024..=65535`; Save dispatches `SetProxyPort(u16)`.
-- [ ] Each frame: `try_recv` drain `event_rx` to exhaustion before rendering.
-- [ ] egui default dark theme; no custom skinning.
-- [ ] **Tests:** state transitions for all `AppCommand` variants; URL validation; volume throttle timing; status-indicator updates from synthetic `BackendEvent`s.
-- [ ] **Gate:** `cargo test --test gui_state_tests` green; manual smoke test on each supported OS.
+- [x] Bottom bar (~48 px): Play / Pause / Stop (disabled per spec rules); Volume slider 0..=100 → 0.0..=1.0; mute toggle; throttled to 1 message / 100 ms; corrected from `BackendEvent::Volume`.
+- [x] Status strip: colored dot (amber/green/red); playback state; transient error banner with manual dismiss.
+- [x] Settings modal: proxy port input validated `1024..=65535`; Save dispatches `SetProxyPort(u16)`.
+- [x] Each frame: `try_recv` drain `event_rx` to exhaustion before rendering.
+- [x] egui default dark theme; no custom skinning.
+- [x] **Tests:** state transitions for all `AppCommand` variants; URL validation; volume throttle timing; status-indicator updates from synthetic `BackendEvent`s.
+- [x] **Gate:** `cargo test --test gui_state_tests` green (33 tests); manual smoke test on each supported OS.
+
+> **Lessons recorded (Phase 9):** (1) **Spec §3.1 requires a retry action but §4.1's enum had no rescan command** — added `AppCommand::Rescan` to `state.rs` and the spec enum; Phase 10 must map it to an immediate mDNS re-query. (2) **eframe 0.36 changed the `App` trait** — `update` is gone; implement `ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)`, and panels are the unified `egui::Panel::left/top/bottom` with `exact_size(...)` (no more `SidePanel`/`TopBottomPanel`, no `resizable` on top/bottom by default). (3) **`futures_util::poll!` is `async`-only** (gated behind the `async-await` feature) — cannot be used on the GUI thread; poll the `rfd::AsyncFileDialog` future manually with `std::task::Waker::noop()` + `Context::from_waker`, re-polling every frame (`Pin<Box<dyn Future + Send>>` is `Unpin`, so `Pin::new(&mut *fut).poll(&mut cx)` works). (4) **Discovery Error state is driven by `BackendEvent::ConnectionError`** while the receiver list is empty — the Phase 2 contract surfaces fatal mDNS setup errors via `ConnectionError`. (5) Keep `futures-util` a dev-dependency only; the GUI needs no main-dep addition.
 
 ### Phase 10 — Runtime & supervisor (`runtime.rs`) ← `06-concurrency.md`
 - [ ] Build `tokio::runtime::Runtime::new()` (multi-threaded).
