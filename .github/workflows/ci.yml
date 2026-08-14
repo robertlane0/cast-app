@@ -34,7 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install stable Rust (rust-toolchain.toml: stable + rustfmt + clippy)
+      - name: "Install stable Rust (rust-toolchain.toml: stable + rustfmt + clippy)"
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo artifacts
