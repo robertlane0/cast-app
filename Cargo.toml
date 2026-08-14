@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
+[features]
+# Real-Chromecast end-to-end tests (`tests/integration/cast_e2e.rs`): the test
+# crate is empty without this feature. Run with:
+#   cargo test --features e2e-cast -- --ignored --test-threads=1
+e2e-cast = []
+
 [dependencies]
 eframe = "0.36"            # pin latest stable at impl start
 egui   = "0.36"
@@ -39,6 +45,11 @@ path = "tests/integration/http_e2e.rs"
 [[test]]
 name = "screen_e2e"
 path = "tests/integration/screen_e2e.rs"
+
+# Feature-gated: empty unless `--features e2e-cast` (see `[features]`).
+[[test]]
+name = "cast_e2e"
+path = "tests/integration/cast_e2e.rs"
 
 [workspace]
 members = ["xtask"]

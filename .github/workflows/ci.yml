@@ -1,0 +1,83 @@
+# CI gate per AGENTS.md §4: fmt --check -> clippy -D warnings -> test ->
+# build -> forbid-unsafe-check.sh -> cargo deny check, across the supported
+# OS matrix, with the committed Cargo.lock uploaded as an artifact.
+#
+# Linux needs no apt packages: the GUI/TLS stack is dlopen-based
+# (xkbcommon-dl, x11-dl, dlib) or pure Rust (xcb 1.7, wayland-client, ring).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  gate:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Spec 01 §8: "macOS 13+"; macos-14 is the long-lived Intel runner.
+        os: [ubuntu-latest, windows-latest, macos-14]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust (rust-toolchain.toml: stable + rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: clippy (e2e-cast feature)
+        run: cargo clippy --all-targets --features e2e-cast -- -D warnings
+
+      - name: test
+        run: cargo test --all
+
+      - name: test (doc)
+        run: cargo test --doc
+
+      # Real-device tests never run in CI (they need a Chromecast), but the
+      # feature-gated target must keep compiling.
+      - name: e2e-cast target compiles
+        run: cargo test --features e2e-cast --test cast_e2e --no-run
+
+      - name: build
+        run: cargo build
+
+      - name: build (release profile)
+        run: cargo build --release
+
+      - name: forbid-unsafe-check
+        shell: bash
+        run: ./scripts/forbid-unsafe-check.sh
+
+      - name: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+      - name: Upload Cargo.lock artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cargo.lock-${{ matrix.os }}
+          path: Cargo.lock
+          if-no-files-found: error

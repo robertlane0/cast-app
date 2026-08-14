@@ -128,7 +128,7 @@ cargo tree --duplicates               # review duplicate deps before merge
 cargo test --features e2e-cast -- --ignored --test-threads=1
 ```
 
-CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-13`):
+CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
 `fmt --check` → `clippy -D warnings` → `test` → `build` → `forbid-unsafe-check.sh`
 → `cargo deny check`.
 
@@ -377,11 +377,20 @@ acceptance criteria pass.
 > **Lessons recorded (Phase 10):** (1) **`watch::Sender::send` self-deadlocks when a `Ref` from `borrow()` is still alive** — `send` (via `send_replace`) takes the value write-lock while the outstanding `Ref` holds the read-lock on the same `RwLock`. `self.rescan.send(self.rescan.borrow() + 1)` froze the supervisor task for good (found via a `fatal_mdns` runtime test hang; masked earlier because test mDNS tasks panicked at spawn and dropped their receivers, and tokio only errors when `receiver_count() == 0`). Always drop the `Ref` before `send`/`send_replace`. (2) **tokio 1.53 `UdpSocket::from_std` panics on a blocking socket** — "Registering a blocking socket with the tokio runtime is unsupported" (tokio-rs/tokio#7172). Every socket injected into the backend (tests' discovery socket, the mdns sniffer socket) must be `set_nonblocking(true)` first. (3) **`Backend::shutdown` must never run inside a tokio runtime** — `runtime.block_on` panics; runtime tests are plain `#[test]`, and a panic that skips `backend.shutdown()` leaves the `Runtime::drop` blocking forever (drop waits for all tasks). (4) **The cast task auto-launches**: `LOAD` in `Phase::Connected` sends `LAUNCH` first and queues the LOAD until `Ready` — integration tests must push a `RECEIVER_STATUS` to see the LOAD on the wire.
 
 ### Phase 11 — Integration tests + CI
-- [ ] `tests/integration/http_e2e.rs`: spin server in-process, exercise all Range cases with `reqwest`.
-- [ ] `tests/integration/screen_e2e.rs`: dummy rawvideo stdin feeder → ffmpeg → HTTP → reqwest consumer; skip if `ffmpeg` absent.
-- [ ] `tests/integration/cast_e2e.rs`: `#[ignore]` tests requiring a real Chromecast; gated behind `--features e2e-cast`.
-- [ ] GitHub Actions matrix (ubuntu/windows/macos) running §4 CI gate.
-- [ ] Upload `Cargo.lock` artifact on each run.
+- [x] `tests/integration/http_e2e.rs`: spin server in-process, exercise all Range cases with `reqwest`.
+- [x] `tests/integration/screen_e2e.rs`: dummy rawvideo stdin feeder → ffmpeg → HTTP → reqwest consumer; skip if `ffmpeg` absent.
+- [x] `tests/integration/cast_e2e.rs`: `#[ignore]` tests requiring a real Chromecast; gated behind `--features e2e-cast`.
+- [x] GitHub Actions matrix (ubuntu/windows/macos) running §4 CI gate (`.github/workflows/ci.yml`).
+- [x] Upload `Cargo.lock` artifact on each run.
+
+> **Phase 11 notes:** (1) `cast_e2e.rs` is feature-gated with `#![cfg(feature =
+> "e2e-cast")]` plus `[[test]]` entry in `Cargo.toml`; CI only compiles it
+> (`--no-run`). Run manually with
+> `cargo test --features e2e-cast --test cast_e2e -- --ignored --test-threads=1`;
+> pin a receiver via `CAST_E2E_RECEIVER=IP:port` or let mDNS discovery pick one.
+> (2) `matches!` cannot express match guards — use a full `match` closure for
+> value-asserting event predicates. (3) macos-13 runners were retired by GitHub;
+> the matrix uses `macos-14` (spec `01-architecture.md` §8 allows "macOS 13+").
 
 ### Phase 12 — Production hardening
 - [ ] `tracing-subscriber` with `env-filter` (`CAST_APP_LOG=info` default).
@@ -465,7 +474,7 @@ A merge to `main` is production-ready when **all** of the following are true:
 - [ ] Heartbeat watchdog, reconnect backoff, and shutdown ordering covered by tests.
 - [ ] HTTP Range correctness verified with `curl` and a real Chromecast on each OS.
 - [ ] fMP4 `-movflags` working set validated against a real receiver; result recorded in `screen/ffmpeg.rs` doc comment.
-- [ ] CI green on ubuntu-latest, windows-latest, macos-13.
+- [ ] CI green on ubuntu-latest, windows-latest, macos-14.
 - [ ] `Cargo.lock` committed and reflects pinned versions from §3.2.
 - [ ] `ffmpeg` PATH discovery error UX is clear and actionable on each platform.
 - [ ] Manual verification script (§11) executed successfully on at least one developer machine per OS.
