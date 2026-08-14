@@ -169,8 +169,22 @@ pub async fn connect_with_timeout(
     let handle = tokio::task::spawn_blocking(move || {
         let result = (|| {
             let mut conn = ClientConnection::new(Arc::new(config), server_name)?;
-            conn.complete_io(&mut std_tcp)?;
-            Ok::<_, TlsError>(rustls::StreamOwned::new(conn, std_tcp))
+            match conn.complete_io(&mut std_tcp) {
+                Ok(_) => Ok(rustls::StreamOwned::new(conn, std_tcp)),
+                // On Windows a refused peer often surfaces only when the
+                // handshake writes (WSAECONNRESET 10054) rather than at
+                // `connect`; keep the contract "refused ⇒ TlsError::Connect"
+                // on every platform.
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    Err(TlsError::Connect { addr, source })
+                }
+                Err(source) => Err(TlsError::Io(source)),
+            }
         })();
         let _ = tx.send(result);
     });

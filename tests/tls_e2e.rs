@@ -95,11 +95,20 @@ async fn handshake_times_out_against_a_non_tls_peer() {
 #[tokio::test]
 async fn connect_to_unreachable_port_fails() {
     // A refused connection surfaces as TlsError::Connect, not a hang.
+    // Windows loopback quirk: connecting to a closed port can report success
+    // at the socket layer with the refusal arriving later, in which case the
+    // bounded ConnectTimeout fires instead. Both prove "bounded failure".
     install_crypto_provider();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener); // nothing listens now
 
     let result = connect_with_timeout(addr, Duration::from_secs(2)).await;
-    assert!(matches!(result, Err(TlsError::Connect { .. })));
+    assert!(
+        matches!(
+            result,
+            Err(TlsError::Connect { .. }) | Err(TlsError::ConnectTimeout { .. })
+        ),
+        "expected Connect or ConnectTimeout, got {result:?}"
+    );
 }

@@ -84,6 +84,33 @@ fn expect_event(rx: &mut mpsc::UnboundedReceiver<BackendEvent>) -> BackendEvent 
     }
 }
 
+/// Poll until an event matching `predicate` arrives, draining earlier events.
+/// Startup events such as `DisplaysUpdated` are platform-dependent (a headless
+/// Linux CI runner emits none, a Windows desktop emits one per monitor), so
+/// tests asserting on a specific event must not require it to be the first.
+fn expect_event_matching(
+    rx: &mut mpsc::UnboundedReceiver<BackendEvent>,
+    mut predicate: impl FnMut(&BackendEvent) -> bool,
+) -> BackendEvent {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match rx.try_recv() {
+            Ok(event) => {
+                if predicate(&event) {
+                    return event;
+                }
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                assert!(Instant::now() < deadline, "event within timeout");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                panic!("backend event channel closed unexpectedly");
+            }
+        }
+    }
+}
+
 /// Consume whatever the supervisor emitted at startup (e.g. `DisplaysUpdated`
 /// when enumeration succeeds, `ConnectionError` when the discovery socket
 /// could not bind). Keeps the deterministic assertions below aligned with the
@@ -215,7 +242,10 @@ fn fatal_mdns_setup_surfaces_error_and_rescan_revives() {
     );
 
     assert_eq!(
-        expect_event(&mut event_rx),
+        expect_event_matching(&mut event_rx, |event| matches!(
+            event,
+            BackendEvent::ConnectionError(_)
+        )),
         BackendEvent::ConnectionError("mDNS discovery failed: test: no multicast".to_string())
     );
 
@@ -225,7 +255,10 @@ fn fatal_mdns_setup_surfaces_error_and_rescan_revives() {
         .send(AppCommand::SelectReceiver(device.clone()))
         .unwrap();
     assert_eq!(
-        expect_event(&mut event_rx),
+        expect_event_matching(&mut event_rx, |event| matches!(
+            event,
+            BackendEvent::ReceiverConnected(_)
+        )),
         BackendEvent::ReceiverConnected(device)
     );
     let pipe = connector.last_pipe().expect("pipe created on connect");

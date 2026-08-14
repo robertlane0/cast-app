@@ -82,7 +82,11 @@ fn wayland_for(session_type: Option<&OsStr>, wayland_display: Option<&OsStr>) ->
 /// A source of raw frames. Extracted from the capture loop so tests can
 /// drive failure counting, resolution changes and stop handling without a
 /// real display.
-pub trait FrameSource: Send {
+///
+/// Not `Send`-bounded: on Windows `xcap::Monitor` wraps an `HMONITOR` raw
+/// pointer and is `!Send`, so the source is constructed and used entirely on
+/// the capture thread (`start_capture` moves only the monitor *name* across).
+pub trait FrameSource {
     /// Capture one frame, or explain the transient/permanent failure.
     fn capture_frame(&mut self) -> Result<Frame, String>;
     /// Re-acquire the underlying display handle (display hotplug).
@@ -184,23 +188,21 @@ pub fn start_capture(
             "screen capture is unavailable on Wayland sessions; run under X11/XWayland".to_string(),
         );
     }
-    let source = X11MonitorSource::new(monitor_name)?;
-    let initial_resolution = source
-        .monitor
-        .as_ref()
-        .and_then(|monitor| monitor.width().ok().zip(monitor.height().ok()))
-        .ok_or("failed to read the monitor resolution")?;
+    let initial_resolution = monitor_resolution(&monitor_name)?;
+    let on_error = Arc::new(on_error);
     let thread = std::thread::Builder::new()
         .name("screen-capture".to_string())
         .spawn(move || {
-            run_capture(
-                source,
-                frames,
-                stop,
-                resolution_request,
-                Arc::new(on_error),
-                shutdown,
-            );
+            // xcap's `Monitor` is `!Send` on Windows (HMONITOR); build the
+            // source on this thread so only the name string crosses threads.
+            let source = match X11MonitorSource::new(monitor_name) {
+                Ok(source) => source,
+                Err(error) => {
+                    on_error(&format!("failed to open monitor: {error}"));
+                    return;
+                }
+            };
+            run_capture(source, frames, stop, resolution_request, on_error, shutdown);
         })
         .map_err(|error| error.to_string())?;
     Ok(CaptureHandle {
@@ -356,6 +358,13 @@ mod tests {
 
     #[test]
     fn wayland_session_detection_is_pure() {
+        // The env probes only apply on Linux; on every other platform the
+        // session can never be Wayland (`wayland_for` short-circuits).
+        if !cfg!(target_os = "linux") {
+            assert!(!wayland_for(Some(OsStr::new("wayland")), None));
+            assert!(!wayland_for(None, Some(OsStr::new("wayland-0"))));
+            return;
+        }
         assert!(!wayland_for(None, None));
         assert!(wayland_for(Some(OsStr::new("wayland")), None));
         assert!(wayland_for(
