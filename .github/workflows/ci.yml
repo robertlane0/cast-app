@@ -84,7 +84,13 @@ jobs:
 
       - name: cargo deny check (Windows)
         if: runner.os == 'Windows'
-        run: cargo deny check --all-features --manifest-path ./Cargo.toml
+        run: cargo install --locked cargo-deny && cargo deny check
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: cargo deny check (macOS)
+        if: runner.os == 'macOS'
+        run: cargo install --locked cargo-deny && cargo deny check
         env:
           RUST_BACKTRACE: 1
 
