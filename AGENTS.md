@@ -76,7 +76,8 @@ xcap   = "0.4"
 serde  = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = "0.2"
 thiserror = "1"
 anyhow    = "1"
 bytes     = "1"
@@ -345,6 +346,7 @@ acceptance criteria pass.
   - `BoundedDropOldest` cap 2 capture→controller (drop-oldest; eviction is producer-side, so the queue stays ≤2 under bursts).
   - Controller thread (owns `Ffmpeg`, writes stdin, restart on resolution change, EOF→wait→kill teardown); dedicated stdout reader thread per encoder generation (cap-8 drop-oldest output queue); forwarder thread pushes encoded chunks into the media server's live channel (cap 8) and tears down the session when the consumer closes.
   - **Lesson:** a fake encoder that forks background children survives SIGKILL of the shell and keeps the stdout/stderr pipes open forever — bridge `join()` hangs on the readers. Test fakes must kill their own children on stdin EOF.
+- **Lesson (Phase 12):** POSIX 2.9.3.1 gives an *asynchronous list* (`cmd &`) a `/dev/null` stdin whenever job control is off — so `cat >/dev/null &` EOFs instantly, `wait $CPID` returns, and the emitter is killed before any chunk reaches the pipe. A fake encoder that relied on that pattern failed ~50% of `screen_pipeline_tests` runs (the emitter raced the kill). Fix: `exec 3<&0; cat >/dev/null <&3 &` — an explicit fd redirect overrides the implicit `/dev/null` assignment and `cat` then genuinely holds the stdin pipe until the bridge closes it (EOF → the script kills its own emitter → clean exit).
 - [x] **Tests:** `tests/screen_pipeline_tests.rs` (5: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
 - [x] **Gate:** `cargo test --test screen_pipeline_tests --test screen_e2e` green.
 
@@ -393,14 +395,15 @@ acceptance criteria pass.
 > the matrix uses `macos-14` (spec `01-architecture.md` §8 allows "macOS 13+").
 
 ### Phase 12 — Production hardening
-- [ ] `tracing-subscriber` with `env-filter` (`CAST_APP_LOG=info` default).
-- [ ] Audit every `unwrap`/`expect`/`panic` in non-init code; convert to `?` + typed error.
-- [ ] Backpressure tuning: capture channel cap 2, encoder channel cap 8.
-- [ ] Log file at platform log dir (use `std::env::temp_dir()` if nothing better).
-- [ ] Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
-- [ ] Update `README.md` with per-platform build/run/ffmpeg-install instructions.
-- [ ] Walk the manual verification script (§12 below) on each supported OS.
-- [ ] Tick every acceptance-criteria box in `specs/07-requirements-and-tests.md`.
+- [x] `tracing-subscriber` with `env-filter` (`CAST_APP_LOG=info` default; falls back to `RUST_LOG`, then `info`).
+- [x] Audit every `unwrap`/`expect`/`panic` in non-init code; convert to `?` + typed error.
+  - Remaining `expect`/`unreachable!` are documented init-only (`runtime.rs` runtime build) or provably-reachable-never match arms (`connection.rs` run-loop dispatch filters `Select`/`Shutdown` before `handle_command`; `capture.rs` join-handle taken once from a locally-created handle).
+- [x] Backpressure tuning: capture channel cap 2, encoder channel cap 8.
+- [x] Log file at platform log dir (Linux `$XDG_STATE_HOME`/`~/.local/state`, macOS `~/Library/Logs`, Windows `%LOCALAPPDATA%`; `std::env::temp_dir()` fallback).
+- [x] Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
+- [x] Update `README.md` with per-platform build/run/ffmpeg-install instructions.
+- [ ] Walk the manual verification script (§11 below) on each supported OS (requires physical Chromecasts + per-OS machines).
+- [x] Tick every acceptance-criteria box in `specs/07-requirements-and-tests.md` (also `specs/03-cast-engine.md` §8 and `specs/06-concurrency.md` §6).
 
 ---
 

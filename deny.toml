@@ -28,14 +28,11 @@ deny = [
 # ttf-parser (via winit's sctk-adwaita theme on Linux) is unmaintained with no
 # patched version; the only consumers are GUI font rendering paths. Tracked in
 # upstream; re-review when winit/eframe migrate to skrifa.
-# RUSTSEC-2026-0009 (time RFC 2822 stack exhaustion): affects only the
-# dev-dependency path rcgen -> time, used solely to build self-signed test
-# certificates; no user-controlled input is ever parsed. The fixed time
-# release requires Rust 1.88 (repo pins 1.85 per AGENTS.md §2.7); re-evaluate
-# when the toolchain is bumped.
+# RUSTSEC-2026-0009 (time RFC 2822 stack exhaustion) was ignored while the
+# fixed time release required Rust 1.88; the advisory no longer matches the
+# locked tree, so the ignore entry has been dropped.
 ignore = [
     "RUSTSEC-2026-0192",
-    "RUSTSEC-2026-0009",
 ]
 
 [licenses]

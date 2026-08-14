@@ -98,11 +98,11 @@ backend task(s)
 
 ## 6. Responsiveness requirements
 
-- [ ] GUI rendering remains independent of network latency.
-- [ ] mDNS parsing does not block GUI rendering.
-- [ ] TLS I/O does not block GUI rendering.
-- [ ] HTTP serving does not block GUI rendering.
-- [ ] Screen capture polling does not run on the GUI thread.
-- [ ] Backends communicate through explicit asynchronous boundaries.
-- [ ] The GUI polls events with `try_recv` each frame.
-- [ ] Shutdown is coordinated across all tasks and the capture thread.
+- [x] GUI rendering remains independent of network latency.
+- [x] mDNS parsing does not block GUI rendering.
+- [x] TLS I/O does not block GUI rendering.
+- [x] HTTP serving does not block GUI rendering.
+- [x] Screen capture polling does not run on the GUI thread.
+- [x] Backends communicate through explicit asynchronous boundaries.
+- [x] The GUI polls events with `try_recv` each frame.
+- [x] Shutdown is coordinated across all tasks and the capture thread.

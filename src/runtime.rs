@@ -231,7 +231,7 @@ impl SupervisorState {
                 self.rescan.send_replace(next);
                 // Discovery never started (fatal socket setup): retry now.
                 if self.mdns_task.is_none() {
-                    eprintln!("[trace] rescan arm: rebinding");
+                    tracing::debug!("rescan: rebinding the mDNS socket");
                     match mdns::bind_socket() {
                         Ok(socket) => {
                             let (rescan_tx, rescan_rx) = watch::channel(0u8);

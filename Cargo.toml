@@ -23,7 +23,8 @@ serde  = { version = "1", features = ["derive"] }
 # byte-exact against the spec examples (`03-cast-engine.md` §6).
 serde_json = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = "0.2"
 thiserror = "1"
 anyhow    = "1"
 bytes     = "1"

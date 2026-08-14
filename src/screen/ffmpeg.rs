@@ -136,7 +136,7 @@ fn spawn_inner(mut command: Command) -> io::Result<Ffmpeg> {
     let stderr = child
         .stderr
         .take()
-        .expect("stderr is piped by build_command");
+        .ok_or_else(|| io::Error::other("spawned encoder without a piped stderr"))?;
     let stderr_tail = Arc::new(Mutex::new(Vec::new()));
     let reader_tail = Arc::clone(&stderr_tail);
     let stderr_reader = std::thread::Builder::new()

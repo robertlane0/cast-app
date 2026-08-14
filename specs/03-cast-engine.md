@@ -308,19 +308,19 @@ Discover
 
 ## 8. Engine acceptance criteria
 
-- [ ] Receiver discovery uses the specified multicast address and service query.
-- [ ] Receiver IP/port/name can be extracted from DNS records.
-- [ ] DNS responses with compression pointers parse correctly.
-- [ ] Malformed DNS packets are discarded without panicking.
-- [ ] TCP connection can be wrapped with `rustls`.
-- [ ] Self-signed receiver certificates are accepted as specified.
-- [ ] CastV2 frames contain a big-endian 4-byte length prefix.
-- [ ] The decoder reads the length prefix and the exact payload length, rejecting frames over 16 MiB.
-- [ ] CastMessage serialization does not depend on `prost`.
-- [ ] CastMessage deserialization tolerates unknown fields.
-- [ ] Connection namespace sends `CONNECT`.
-- [ ] Heartbeat sends `PING` every 5 seconds and a `PONG` resets the timer.
-- [ ] Receiver namespace can issue `LAUNCH` for `CC1AD845`.
-- [ ] `RECEIVER_STATUS` `transportId` is used as the media destination ID.
-- [ ] Media namespace can send `LOAD` with the proxy URL and `PLAY`/`PAUSE`/`STOP`.
-- [ ] Every request carries a `requestId` and responses are correlated to it.
+- [x] Receiver discovery uses the specified multicast address and service query.
+- [x] Receiver IP/port/name can be extracted from DNS records.
+- [x] DNS responses with compression pointers parse correctly.
+- [x] Malformed DNS packets are discarded without panicking.
+- [x] TCP connection can be wrapped with `rustls`.
+- [x] Self-signed receiver certificates are accepted as specified.
+- [x] CastV2 frames contain a big-endian 4-byte length prefix.
+- [x] The decoder reads the length prefix and the exact payload length, rejecting frames over 16 MiB.
+- [x] CastMessage serialization does not depend on `prost`.
+- [x] CastMessage deserialization tolerates unknown fields.
+- [x] Connection namespace sends `CONNECT`.
+- [x] Heartbeat sends `PING` every 5 seconds and a `PONG` resets the timer.
+- [x] Receiver namespace can issue `LAUNCH` for `CC1AD845`.
+- [x] `RECEIVER_STATUS` `transportId` is used as the media destination ID.
+- [x] Media namespace can send `LOAD` with the proxy URL and `PLAY`/`PAUSE`/`STOP`.
+- [x] Every request carries a `requestId` and responses are correlated to it.

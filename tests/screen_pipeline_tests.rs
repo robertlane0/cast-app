@@ -250,7 +250,14 @@ async fn closed_http_consumer_tears_down_the_session() {
     // ends is the client's dropped socket) while draining stdin. The
     // background emitter is killed when the stdin drainer hits EOF, so no
     // orphan process keeps the output pipes open after teardown.
-    let script = "cat >/dev/null & CPID=$!; while :; do head -c 65536 /dev/zero; done & EPID=$!; wait $CPID; kill $EPID".to_string();
+    //
+    // NOTE: `cat >/dev/null &` alone would NOT hold stdin — POSIX 2.9.3.1
+    // gives an asynchronous list a `/dev/null` stdin when job control is
+    // off, so `cat` would EOF instantly, `wait` would return, and the
+    // emitter would be killed before any chunk reached the pipe (a race
+    // that failed ~50% of runs). `exec 3<&0` + `cat <&3 &` makes the
+    // explicit fd redirect override the implicit /dev/null assignment.
+    let script = "exec 3<&0; cat >/dev/null <&3 & CPID=$!; while :; do head -c 65536 /dev/zero; done & EPID=$!; wait $CPID; kill $EPID".to_string();
     // The media server only serves /stream for an active Screen source
     // (same ordering the Phase 10 runtime uses).
     server.set_source(ActiveSource::Screen("test-monitor".to_string()));
