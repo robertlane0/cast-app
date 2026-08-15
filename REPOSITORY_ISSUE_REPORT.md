@@ -1,24 +1,5 @@
 ## Issues
 
-### ISS-005 · 🟡 Medium · Correctness — GUI busy-loops while file picker is open
-
-**File:** [`src/app.rs`](./cast-app/src/app.rs#L447-L449)  
-**Evidence:**
-```rust
-// src/app.rs:447-449
-Poll::Pending => {
-    ctx.request_repaint();
-}
-```
-
-**Description:** When the `rfd` file picker is pending, `ctx.request_repaint()` is called, triggering an immediate next frame. Since the picker waits for user interaction, this causes the GUI thread to spin at maximum FPS, spiking CPU usage until the dialog is closed.
-
-**Root Cause:** A noop waker is used (correct for the GUI thread), but the repaint request should be delayed.
-
-**Recommended Fix:** Replace `ctx.request_repaint()` with `ctx.request_repaint_after(Duration::from_millis(200))` to match the existing `REPAINT_INTERVAL`.
-
----
-
 ### ISS-006 · 🟡 Medium · Correctness — Reader thread JoinHandles accumulate unboundedly
 
 **File:** [`src/screen/bridge.rs`](./cast-app/src/screen/bridge.rs#L486)  

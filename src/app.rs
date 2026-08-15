@@ -445,7 +445,7 @@ impl CastDashboard {
                 self.file_picker = None;
             }
             Poll::Pending => {
-                ctx.request_repaint();
+                ctx.request_repaint_after(Self::REPAINT_INTERVAL);
             }
         }
     }
