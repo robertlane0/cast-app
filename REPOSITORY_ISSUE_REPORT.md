@@ -1,18 +1,5 @@
 ## Issues
 
-### ISS-012 · 🟡 Medium · Testing — Screen pipeline tests are Unix-only
-
-**File:** [`tests/screen_pipeline_tests.rs`](./cast-app/tests/screen_pipeline_tests.rs)  
-**Evidence:** `#![cfg(unix)]` at line 9.
-
-**Description:** All 5 screen pipeline tests are compiled out on Windows CI. The fake encoders rely on `/bin/sh`, POSIX file descriptors, and `kill` signals. This means the screen bridge has zero test coverage on Windows, yet Windows is a supported platform.
-
-**Root Cause:** The test harness uses shell scripts as fake encoders, which are inherently Unix-specific.
-
-**Recommended Fix:** Create a small compiled Rust binary as the fake encoder (reads stdin, writes stdout, respects EOF), which would work cross-platform. Or write Windows-specific fake encoder `.bat` scripts with a `#[cfg(windows)]` variant.
-
----
-
 ### ISS-013 · 🔵 Low · Documentation — CI comment contradicts apt-get step
 
 **File:** [`.github/workflows/ci.yml`](./cast-app/.github/workflows/ci.yml#L5-L6)  

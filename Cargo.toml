@@ -40,6 +40,14 @@ rcgen = "0.14.7"
 tokio-test = "0.4"
 futures-util = "0.3"
 
+# Cross-platform fake encoder for `tests/screen_pipeline_tests.rs` (ISS-012):
+# a compiled binary replaces the Unix-only `/bin/sh` fake-encoder scripts so
+# the screen-bridge tests also run on Windows CI. The tests locate it via the
+# `CARGO_BIN_EXE_fake-encoder` environment variable.
+[[bin]]
+name = "fake-encoder"
+path = "tests/support/fake_encoder.rs"
+
 # Nested test files are not auto-discovered by cargo.
 [[test]]
 name = "http_e2e"

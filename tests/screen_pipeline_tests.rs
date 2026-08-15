@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
 
 //! Screen-pipeline integration tests (`05-screen-capture.md` §4–§6) driven
-//! through the real `ScreenBridge` with fake encoder scripts: EOF-honored
-//! teardown, resolution-change restart, unexpected-exit error surfacing,
-//! drop-oldest backpressure, and client-disconnect teardown.
+//! through the real `ScreenBridge` with a compiled fake-encoder binary
+//! (`tests/support/fake_encoder.rs`, located via `CARGO_BIN_EXE_fake-encoder`):
+//! EOF-honored teardown, resolution-change restart, unexpected-exit error
+//! surfacing, drop-oldest backpressure, and client-disconnect teardown. The
+//! binary replaces the former `/bin/sh` fake-encoder scripts so the tests run
+//! on Windows as well as Unix (ISS-012).
 //! Gate: `cargo test --test screen_pipeline_tests`.
-
-#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -22,8 +23,8 @@ use tokio::sync::mpsc;
 
 const WAIT: Duration = Duration::from_secs(10);
 
-fn sh() -> PathBuf {
-    PathBuf::from("sh")
+fn fake_encoder() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_fake-encoder"))
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -37,14 +38,16 @@ fn scratch(name: &str) -> PathBuf {
     ))
 }
 
-/// A fake encoder that consumes stdin until EOF and touches `marker`.
-fn cat_script(marker: &Path) -> String {
-    format!("cat >/dev/null; touch '{}'", marker.display())
+/// `fake-encoder cat MARKER`: consumes stdin until EOF, then creates the
+/// marker file (the test asserts the encoder observed stdin EOF before exit).
+fn cat_args(marker: &Path) -> Vec<String> {
+    vec!["cat".into(), marker.display().to_string()]
 }
 
-/// A fake encoder that appends a "started" line to `log` on every launch.
-fn restart_script(log: &Path) -> String {
-    format!("echo started >> '{}'; cat >/dev/null", log.display())
+/// `fake-encoder restart LOG`: appends a "started" line to `log` on every
+/// launch, then consumes stdin until EOF.
+fn restart_args(log: &Path) -> Vec<String> {
+    vec!["restart".into(), log.display().to_string()]
 }
 
 fn read_log(log: &PathBuf) -> Vec<String> {
@@ -104,14 +107,13 @@ async fn stop_sends_eof_and_waits_for_graceful_exit() {
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let marker = scratch("eof");
     let _ = std::fs::remove_file(&marker);
-    let script = cat_script(&marker);
 
     let bridge = ScreenBridge::start_with_encoder(
         server.clone(),
         events_tx,
         shutdown,
         (8, 8),
-        Some((sh(), vec!["-c".into(), script])),
+        Some((fake_encoder(), cat_args(&marker))),
     )
     .expect("bridge must start");
     wait_for_generation(&server, 1).await;
@@ -144,14 +146,13 @@ async fn resolution_change_restarts_the_encoder() {
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let log = scratch("restart");
     let _ = std::fs::remove_file(&log);
-    let script = restart_script(&log);
 
     let bridge = ScreenBridge::start_with_encoder(
         server.clone(),
         events_tx,
         shutdown,
         (8, 8),
-        Some((sh(), vec!["-c".into(), script])),
+        Some((fake_encoder(), restart_args(&log))),
     )
     .expect("bridge must start");
     wait_for_generation(&server, 1).await;
@@ -180,7 +181,7 @@ async fn unexpected_encoder_exit_stops_pipeline_and_reports() {
         events_tx,
         shutdown,
         (8, 8),
-        Some((sh(), vec!["-c".into(), "exit 3".into()])),
+        Some((fake_encoder(), vec!["exit".into(), "3".into()])),
     )
     .expect("bridge must start");
 
@@ -217,7 +218,7 @@ async fn frame_queue_drops_oldest_when_encoder_is_slow() {
         events_tx,
         shutdown,
         (8, 8),
-        Some((sh(), vec!["-c".into(), "sleep 1".into()])),
+        Some((fake_encoder(), vec!["sleep".into(), "1".into()])),
     )
     .expect("bridge must start");
 
@@ -246,18 +247,10 @@ async fn closed_http_consumer_tears_down_the_session() {
     let (server, shutdown, port) = start_server().await;
     let (events_tx, _events_rx) = mpsc::unbounded_channel();
 
-    // Fake encoder: emits output forever (so the only way the HTTP stream
-    // ends is the client's dropped socket) while draining stdin. The
-    // background emitter is killed when the stdin drainer hits EOF, so no
-    // orphan process keeps the output pipes open after teardown.
-    //
-    // NOTE: `cat >/dev/null &` alone would NOT hold stdin — POSIX 2.9.3.1
-    // gives an asynchronous list a `/dev/null` stdin when job control is
-    // off, so `cat` would EOF instantly, `wait` would return, and the
-    // emitter would be killed before any chunk reached the pipe (a race
-    // that failed ~50% of runs). `exec 3<&0` + `cat <&3 &` makes the
-    // explicit fd redirect override the implicit /dev/null assignment.
-    let script = "exec 3<&0; cat >/dev/null <&3 & CPID=$!; while :; do head -c 65536 /dev/zero; done & EPID=$!; wait $CPID; kill $EPID".to_string();
+    // `stream` mode: drains stdin (holding it open) while emitting 64 KiB
+    // chunks on stdout forever, so the only way the HTTP stream ends is the
+    // client's dropped socket. Exiting on stdin EOF kills the emitter thread,
+    // so no orphan process keeps the output pipes open after teardown.
     // The media server only serves /stream for an active Screen source
     // (same ordering the Phase 10 runtime uses).
     server.set_source(ActiveSource::Screen("test-monitor".to_string()));
@@ -266,7 +259,7 @@ async fn closed_http_consumer_tears_down_the_session() {
         events_tx,
         shutdown,
         (8, 8),
-        Some((sh(), vec!["-c".into(), script])),
+        Some((fake_encoder(), vec!["stream".into()])),
     )
     .expect("bridge must start");
     wait_for_generation(&server, 2).await;
