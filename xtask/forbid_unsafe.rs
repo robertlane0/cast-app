@@ -20,10 +20,14 @@ const ALLOWED_ATTR: &str = concat!("forbid(", "uns\x61fe", "_code)");
 const TARGETS: &[&str] = &["src", "tests", "xtask"];
 
 fn main() -> ExitCode {
+    // Anchor to the repository root (parent of this xtask crate's manifest
+    // directory) so the scan works from any working directory.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
     let mut violations: Vec<String> = Vec::new();
 
     for target in TARGETS {
-        scan_dir(Path::new(target), &mut violations);
+        scan_dir(&root.join(target), &mut violations);
     }
 
     if violations.is_empty() {

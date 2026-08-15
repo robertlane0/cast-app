@@ -1,18 +1,5 @@
 ## Issues
 
-### ISS-016 · 🔵 Low · Architecture — `xtask` sensitive to working directory
-
-**File:** [`xtask/forbid_unsafe.rs`](./cast-app/xtask/forbid_unsafe.rs)  
-**Evidence:** Uses relative paths `"src"`, `"tests"`, `"xtask"` against `std::env::current_dir()`.
-
-**Description:** Running `cargo run -p xtask` from the `xtask/` subdirectory or any directory other than the repository root will fail with "No such file or directory".
-
-**Root Cause:** No anchor to `CARGO_MANIFEST_DIR` or repository root detection.
-
-**Recommended Fix:** Use `Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()` to anchor to the repo root.
-
----
-
 ### ISS-017 · 🔵 Low · Maintainability — `forbid-unsafe-check.sh` missing `set -eo pipefail`
 
 **File:** [`scripts/forbid-unsafe-check.sh`](./cast-app/scripts/forbid-unsafe-check.sh#L5)  
