@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! The local HTTP/1.1 media server (`04-media-proxy.md` §2): async accept
 //! loop, request-line + header parsing, `/stream` routing, per-source
 //! serving (file / URL proxy / live screen), source-switch cancellation of

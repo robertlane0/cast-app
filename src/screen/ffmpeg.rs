@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! `ffmpeg` subprocess builder and lifecycle (`05-screen-capture.md` §4):
 //! rawvideo→H.264 fMP4 encoding with the exact argument set from spec §4,
 //! stdin/stdout/stderr plumbing, stderr diagnostics, and the

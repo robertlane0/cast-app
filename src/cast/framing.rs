@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! CastV2 wire framing: a 4-byte big-endian payload length followed by the
 //! CastMessage protobuf payload (`03-cast-engine.md` §4).
 

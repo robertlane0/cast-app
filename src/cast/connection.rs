@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Full Cast connection lifecycle (`03-cast-engine.md` §7): the
 //! `Disconnected → Connecting → Connected → Launching → Ready → Streaming →
 //! Teardown` state machine, heartbeat watchdog, reconnect backoff, inbound

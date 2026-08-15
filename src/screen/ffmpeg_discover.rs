@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! `ffmpeg` binary discovery on PATH with a cached result
 //! (`05-screen-capture.md` §4.1): the Display source is disabled when the
 //! binary is missing, so availability is scanned once at first use.

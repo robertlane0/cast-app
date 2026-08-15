@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! LAN IP selection for the advertised proxy endpoint
 //! (`04-media-proxy.md` §1.1): the interface whose subnet contains the
 //! receiver's IP; falling back to the default-route interface; falling back

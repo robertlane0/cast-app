@@ -29,7 +29,8 @@ Cast V2 stack and an external `ffmpeg` subprocess for video encoding.
 
 These may never be relaxed by an agent without an explicit spec amendment:
 
-1. **`#![forbid(unsafe_code)]`** in every `.rs` file, root and module.
+1. **`#![forbid(unsafe_code)]`** in every crate root (`src/lib.rs`, `src/main.rs`),
+   which covers all modules. Inner attributes are not repeated in module files.
 2. **No `rust-cast`, `mdns`, `mdns-sd`, or `prost`** dependencies. The Cast
    stack (mDNS, TLS, CastV2 framing, Protobuf) is hand-rolled.
 3. **No `ffmpeg-sys-next` or any C-FFI encoder binding.** Encoding lives in an
@@ -415,7 +416,7 @@ acceptance criteria pass.
 
 ## 7. Coding conventions for agents
 
-- **Every `.rs` file begins with `#![forbid(unsafe_code)]`.** No exceptions.
+- **Every crate root carries `#![forbid(unsafe_code)]`** (`src/lib.rs`, `src/main.rs`); module files must not repeat the inner attribute.
 - **Module-level `//!` docs** state purpose and link to the owning spec section.
 - **Public functions carry `///` docs** referencing requirement IDs, e.g. `/// (FR-005) Encode a CastV2 frame.`
 - **Errors:** `thiserror` for typed errors inside `cast::`, `media::`, `screen::`; `anyhow` only in `main.rs`/`runtime.rs` glue. No `unwrap`/`expect` outside init code.
@@ -535,7 +536,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 
 ## 13. Agent workflow checklist (run on every change)
 
-1. Did I add or modify any `.rs` file? Confirm `#![forbid(unsafe_code)]` at the top.
+1. Did I add or modify any `.rs` file? If it's a new crate root (`src/lib.rs`, `src/main.rs`), confirm `#![forbid(unsafe_code)]` is present; module files must not carry the inner attribute.
 2. Did I add a dependency? Confirm it is not on the ban list and update `deny.toml` if needed.
 3. Did I touch Cast protocol code? Add or update a golden-vector unit test.
 4. Did I touch HTTP code? Add or update a Range / 404 / 405 / 502 test.

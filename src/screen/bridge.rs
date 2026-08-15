@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Capture→ffmpeg stdin and ffmpeg stdout→HTTP channel bridges with
 //! drop-oldest backpressure (`05-screen-capture.md` §5–§6).
 //!

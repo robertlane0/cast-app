@@ -1,18 +1,5 @@
 ## Issues
 
-### ISS-011 · 🟡 Medium · Correctness — `#![forbid(unsafe_code)]` in non-crate-root files
-
-**File:** All 30 `.rs` files in `src/`  
-**Evidence:** Every module file has `#![forbid(unsafe_code)]` at line 1.
-
-**Description:** Inner attributes (`#![...]`) are valid only in crate root files (`lib.rs`, `main.rs`) and module files when placed at the very top. In Rust edition 2024, these are technically warnings turned into future-compatibility lint issues. The attribute is redundant with the crate-root `#![forbid(unsafe_code)]` in `lib.rs` and `main.rs` which already covers all modules.
-
-**Root Cause:** Defense-in-depth strategy from the spec, but creates noise and is fragile under future Rust editions.
-
-**Recommended Fix:** Keep `#![forbid(unsafe_code)]` only in `src/lib.rs` and `src/main.rs`; remove from all other files. The `forbid-unsafe-check.sh` script and `xtask` already enforce this policy externally. (Since clippy passes clean today, the current edition accepts these, but this is a maintainability concern for future editions.)
-
----
-
 ### ISS-012 · 🟡 Medium · Testing — Screen pipeline tests are Unix-only
 
 **File:** [`tests/screen_pipeline_tests.rs`](./cast-app/tests/screen_pipeline_tests.rs)  

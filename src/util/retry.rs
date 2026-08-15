@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Exponential-backoff iterator for reconnect / retry policies.
 //! Owned by `06-concurrency.md` §5 and `03-cast-engine.md` §7.
 

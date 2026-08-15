@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Media proxy: local HTTP/1.1 server, Range handling, local-file streaming,
 //! remote-URL proxying, LAN IP selection, and source switching.
 //! Owned by `04-media-proxy.md`.

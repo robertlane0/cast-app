@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! File-extension to MIME-type mapping for media serving
 //! (`04-media-proxy.md` §3.2).
 

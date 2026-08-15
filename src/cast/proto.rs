@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 //! Hand-rolled Protobuf codec for the CastMessage structure
 //! (`03-cast-engine.md` §5). Only the fields this application uses are
 //! decoded; unknown fields are skipped by wire type.
