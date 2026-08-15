@@ -1,22 +1,5 @@
 ## Issues
 
-### ISS-013 · 🔵 Low · Documentation — CI comment contradicts apt-get step
-
-**File:** [`.github/workflows/ci.yml`](./cast-app/.github/workflows/ci.yml#L5-L6)  
-**Evidence:**
-```yaml
-# Line 5-6: "Linux needs no apt packages..."
-# Line 44-47: sudo apt-get install -y libgl1-mesa-dev libegl1-mesa-dev ...
-```
-
-**Description:** The header comment at lines 5-6 says "Linux needs no apt packages" but lines 44-47 immediately install five development libraries. This is misleading and confusing.
-
-**Root Cause:** Comment was written before the build requirements were understood; never updated.
-
-**Recommended Fix:** Update the comment to reflect reality, e.g. "Linux needs OpenGL/EGL and PipeWire development headers for the GUI and screen capture stacks."
-
----
-
 ### ISS-014 · 🔵 Low · Performance — MIME lookup allocates on every call
 
 **File:** [`src/media/mime.rs`](./cast-app/src/media/mime.rs)  

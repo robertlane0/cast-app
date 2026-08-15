@@ -2,8 +2,8 @@
 # build -> forbid-unsafe-check.sh -> cargo deny check, across the supported
 # OS matrix, with the committed Cargo.lock uploaded as an artifact.
 #
-# Linux needs no apt packages: the GUI/TLS stack is dlopen-based
-# (xkbcommon-dl, x11-dl, dlib) or pure Rust (xcb 1.7, wayland-client, ring).
+# Linux needs OpenGL/EGL, GBM, and PipeWire development headers for the GUI
+# and screen-capture stacks (see the "Install Ubuntu dependencies" step).
 
 name: CI
 
