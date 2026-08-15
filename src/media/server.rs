@@ -463,7 +463,7 @@ async fn handle_connection(
                         &mut writer,
                         503,
                         "Service Unavailable",
-                        &[("Content-Type", "text/plain"), ("Content-Length", "9")],
+                        &[("Content-Type", "text/plain"), ("Content-Length", "4")],
                     )
                     .await;
                     let _ = writer.write_all(b"busy").await;

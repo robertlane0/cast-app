@@ -1,26 +1,5 @@
 ## Issues
 
-### ISS-002 · 🟠 High · Correctness — Content-Length/body mismatch in 503 response
-
-**File:** [`src/media/server.rs`](./cast-app/src/media/server.rs#L466-L469)  
-**Evidence:**
-```rust
-// src/media/server.rs:466-469
-&[("Content-Type", "text/plain"), ("Content-Length", "9")],
-// ...
-let _ = writer.write_all(b"busy").await;
-```
-
-**Description:** The `Content-Length` header declares 9 bytes, but the body is `"busy"` which is only 4 bytes. This violates HTTP/1.1 semantics and can confuse clients, proxies, or the Chromecast receiver into waiting for 5 more bytes that never arrive.
-
-**Root Cause:** The header was likely written for `"not found"` or similar 9-byte body and then the body text was changed without updating the header.
-
-**Recommended Fix:** Change `Content-Length` to `"4"` to match `b"busy"`, or change the body to something 9 bytes long (e.g., `b"busy now"`).
-
-**Tests to Add:** Test that the 503 response body length matches the `Content-Length` header.
-
----
-
 ### ISS-003 · 🟠 High · Correctness — `ffmpeg` wait_graceful can block indefinitely
 
 **File:** [`src/screen/ffmpeg.rs`](./cast-app/src/screen/ffmpeg.rs#L106-L118)  
