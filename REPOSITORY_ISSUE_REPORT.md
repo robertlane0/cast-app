@@ -1,22 +1,5 @@
 ## Issues
 
-### ISS-009 · 🟡 Medium · Dependencies — `deny.toml` missing duplicate-version policy
-
-**File:** [`deny.toml`](./cast-app/deny.toml)  
-**Evidence:** `[bans]` section has no `multiple-versions` key. `cargo tree --duplicates` shows multiple duplicates (`bitflags`, `calloop`, `drm`, `rustix`, `zvariant_utils`, etc.).
-
-**Description:** AGENTS.md §4 mandates reviewing duplicate deps before merge, but `cargo deny check` does not enforce this — duplicates silently pass. The existing duplicates inflate compile time and binary size.
-
-**Root Cause:** Omission; most duplicates are transitive from the GUI/accessibility stack.
-
-**Recommended Fix:**
-```toml
-[bans]
-multiple-versions = "warn"   # or "deny" once cleaned up
-```
-
----
-
 ### ISS-010 · 🟡 Medium · Dependencies — Cargo.toml version drift from AGENTS.md spec
 
 **File:** [`Cargo.toml`](./cast-app/Cargo.toml)  

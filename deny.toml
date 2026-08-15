@@ -5,6 +5,7 @@
 # GUI/TLS dependency stack (all OSI-approved, non-copyleft).
 
 [bans]
+multiple-versions = "warn"
 deny = [
     "rust-cast",
     "mdns",
