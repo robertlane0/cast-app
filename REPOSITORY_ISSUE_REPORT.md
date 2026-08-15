@@ -1,16 +1,5 @@
 ## Issues
 
-### ISS-014 · 🔵 Low · Performance — MIME lookup allocates on every call
-
-**File:** [`src/media/mime.rs`](./cast-app/src/media/mime.rs)  
-**Evidence:** `let lower = extension.to_ascii_lowercase();` allocates a new `String` on every MIME lookup just for case-insensitive comparison.
-
-**Root Cause:** Simple implementation; not performance-critical (called once per `/stream` request).
-
-**Recommended Fix:** Use `eq_ignore_ascii_case()` in the iterator search instead of pre-lowercasing.
-
----
-
 ### ISS-015 · 🔵 Low · Architecture — `xtask` binary never executed in CI
 
 **File:** [`xtask/forbid_unsafe.rs`](./cast-app/xtask/forbid_unsafe.rs)  

@@ -32,10 +32,9 @@ pub fn mime_for_path(path: &Path) -> &'static str {
 /// MIME type for an extension string, case-insensitive
 /// (`04-media-proxy.md` §3.2).
 pub fn mime_for_extension(extension: &str) -> &'static str {
-    let lower = extension.to_ascii_lowercase();
     MIME_TABLE
         .iter()
-        .find(|(ext, _)| *ext == lower)
+        .find(|(ext, _)| ext.eq_ignore_ascii_case(extension))
         .map(|(_, mime)| *mime)
         .unwrap_or(DEFAULT_MIME)
 }
