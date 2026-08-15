@@ -1,23 +1,5 @@
 ## Issues
 
-### ISS-008 · 🟡 Medium · Dependencies — `cargo-deny` missing `[sources]` enforcement
-
-**File:** [`deny.toml`](./cast-app/deny.toml)  
-**Evidence:** No `[sources]` section present.
-
-**Description:** Without `[sources]` configuration, `cargo deny` does not reject dependencies from unknown registries or ad-hoc git repositories. A compromised or typosquatted dependency from a third-party registry would not be flagged.
-
-**Root Cause:** Omission during initial configuration.
-
-**Recommended Fix:**
-```toml
-[sources]
-unknown-registry = "deny"
-unknown-git = "deny"
-```
-
----
-
 ### ISS-009 · 🟡 Medium · Dependencies — `deny.toml` missing duplicate-version policy
 
 **File:** [`deny.toml`](./cast-app/deny.toml)  

@@ -63,3 +63,7 @@ exceptions = [
     { crate = "untrusted", allow = ["ISC"] },                # ring
     { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] }, # reqwest rustls stack
 ]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
