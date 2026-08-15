@@ -164,7 +164,13 @@ src/
     proto.rs             # hand-rolled CastMessage protobuf codec
     request_id.rs        # monotonic u32 + pending-request map w/ 5s timeout
     namespaces.rs        # CONNECT, PING, LAUNCH, GET_STATUS, SET_VOLUME, STOP_APP, LOAD, PLAY, PAUSE, STOP
-    connection.rs        # full CastConnection lifecycle + reconnect policy
+    connection/
+    mod.rs             # facade: CastConnection handle, re-exports, test_support
+    transport.rs       # Transport trait, SharedTransport, Connector/TlsConnector
+    reader.rs          # FrameAccumulator + dedicated reader thread
+    writer.rs          # framed send_payload on spawn_blocking workers
+    state_machine.rs   # Phase/Command/events, inbound routing, run loop, reconnect policy
+    teardown.rs        # STOP → STOP_APP → close_notify ordering
   media/
     mod.rs
     server.rs            # tokio TcpListener HTTP/1.1 server

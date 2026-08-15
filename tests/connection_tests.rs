@@ -10,12 +10,15 @@ use cast_app::cast::connection::{
     Command, ConnectionConfig, ConnectionError, ConnectionEvent, run,
 };
 use cast_app::cast::framing::{encode_frame, read_frame};
-use cast_app::cast::namespaces::{MEDIA_NS, RECEIVER_ID, RECEIVER_NS, SOURCE_ID, TRANSPORT_ID};
-use cast_app::cast::proto::{decode_cast_message, encode_cast_message};
+use cast_app::cast::namespaces::{
+    CONNECTION_NS, HEARTBEAT_NS, MEDIA_NS, RECEIVER_ID, RECEIVER_NS, SOURCE_ID, StreamType,
+    TRANSPORT_ID, media_destination_id,
+};
+use cast_app::cast::proto::{CastMessage, decode_cast_message, encode_cast_message};
 use cast_app::state::CastDevice;
 use cast_app::util::retry::Backoff;
 use cast_app::util::shutdown::Shutdown;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 fn test_device() -> CastDevice {
@@ -86,6 +89,45 @@ async fn expect_event(rx: &mut mpsc::UnboundedReceiver<ConnectionEvent>) -> Conn
         .await
         .expect("event within timeout")
         .expect("sender still alive")
+}
+
+async fn expect_connected(rx: &mut mpsc::UnboundedReceiver<ConnectionEvent>) {
+    match expect_event(rx).await {
+        ConnectionEvent::Connected(device) => assert_eq!(device.id, "living-room"),
+        other => panic!("expected Connected, got {other:?}"),
+    }
+}
+
+/// Heartbeat 50ms, watchdog 200ms — fast enough for watchdog/pong tests to
+/// finish in real time with a comfortable margin.
+fn test_config() -> ConnectionConfig {
+    ConnectionConfig {
+        heartbeat_interval: Duration::from_millis(50),
+        watchdog_timeout: Duration::from_millis(200),
+        request_timeout: Duration::from_secs(5),
+        backoff: Backoff::with_params(Duration::from_millis(20), Duration::from_millis(20), 3),
+    }
+}
+
+/// Drain everything the transport has written within `timeout`, parse it
+/// into frames, and return the message payloads in order.
+async fn drain_messages(pipe: &MockPipe, timeout: Duration) -> Vec<CastMessage> {
+    let mut accumulated = Vec::new();
+    let mut deadline = Instant::now() + timeout;
+    loop {
+        let chunk = pipe.wait_outgoing(deadline.saturating_duration_since(Instant::now()));
+        if chunk.is_empty() {
+            break;
+        }
+        accumulated.extend_from_slice(&chunk);
+        deadline = Instant::now() + timeout;
+    }
+    let mut messages = Vec::new();
+    let mut cursor = std::io::Cursor::new(&accumulated);
+    while let Ok(Some(payload)) = read_frame(&mut cursor) {
+        messages.push(decode_cast_message(&payload).expect("valid frame"));
+    }
+    messages
 }
 
 /// Collect everything written to `pipe` within `window` and parse it into
@@ -464,6 +506,235 @@ async fn pong_keepalive_and_media_status_events() {
     }
     keepalive.abort();
 
+    commands_tx.send(Command::Shutdown).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("task exits after shutdown")
+        .expect("task did not panic");
+}
+
+/// Full happy path against the mock transport: CONNECT → LAUNCH →
+/// RECEIVER_STATUS → Ready → LOAD → MEDIA_STATUS → STOP → teardown
+/// (`03-cast-engine.md` §7).
+#[tokio::test(flavor = "multi_thread")]
+async fn lifecycle_state_transitions_with_mock_transport() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (commands_tx, commands_rx) = mpsc::unbounded_channel();
+    let shutdown = Shutdown::new();
+    let connector = MockConnector::new();
+    let task = tokio::spawn(run(
+        commands_rx,
+        events_tx,
+        shutdown,
+        connector.clone(),
+        quiet_config(),
+    ));
+
+    let device = test_device();
+    commands_tx.send(Command::Select(device.clone())).unwrap();
+
+    expect_connected(&mut events_rx).await;
+    let pipe = connector.last_pipe().expect("pipe created on connect");
+    let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
+    assert_eq!(messages.len(), 1, "only CONNECT after establishing");
+    assert_eq!(messages[0].namespace, CONNECTION_NS);
+    assert_eq!(messages[0].destination_id, TRANSPORT_ID);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
+        "CONNECT"
+    );
+
+    commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
+    assert_eq!(messages.len(), 1, "only LAUNCH after launch command");
+    assert_eq!(messages[0].destination_id, RECEIVER_ID);
+    assert_eq!(messages[0].namespace, RECEIVER_NS);
+    let launch = serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap();
+    assert_eq!(launch["type"], "LAUNCH");
+    assert_eq!(launch["requestId"], 1);
+    assert_eq!(launch["appId"], "CC1AD845");
+
+    pipe.push_incoming(&cast_frame(
+        RECEIVER_ID,
+        SOURCE_ID,
+        RECEIVER_NS,
+        r#"{"type":"RECEIVER_STATUS","requestId":0,"status":{"applications":[{"appId":"CC1AD845","sessionId":"s-7","transportId":"t-42","statusText":"Ready"}]}}"#,
+    ));
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::Ready {
+            transport_id,
+            session_id,
+        } => {
+            assert_eq!(transport_id, "t-42");
+            assert_eq!(session_id, "s-7");
+        }
+        other => panic!("expected Ready, got {other:?}"),
+    }
+
+    commands_tx
+        .send(Command::Load {
+            content_id: "http://10.0.0.5:8080/stream".to_string(),
+            content_type: "video/mp4".to_string(),
+            stream_type: StreamType::Buffered,
+        })
+        .unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
+    assert_eq!(
+        messages.len(),
+        1,
+        "LOAD is queued until Ready then dispatched"
+    );
+    assert_eq!(messages[0].destination_id, media_destination_id("t-42"));
+    assert_eq!(messages[0].namespace, MEDIA_NS);
+    let load = serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap();
+    assert_eq!(load["type"], "LOAD");
+    assert_eq!(load["media"]["contentId"], "http://10.0.0.5:8080/stream");
+    assert_eq!(load["media"]["streamType"], "BUFFERED");
+
+    pipe.push_incoming(&cast_frame(
+        TRANSPORT_ID,
+        SOURCE_ID,
+        MEDIA_NS,
+        r#"{"type":"MEDIA_STATUS","requestId":2,"status":[{"playerState":"PLAYING","mediaSessionId":3}]}"#,
+    ));
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::MediaStatus {
+            playing: true,
+            buffering: false,
+        } => {}
+        other => panic!("expected playing media status, got {other:?}"),
+    }
+
+    commands_tx.send(Command::Stop).unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].namespace, MEDIA_NS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
+        "STOP"
+    );
+
+    commands_tx.send(Command::Shutdown).unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
+    assert_eq!(messages.len(), 1, "STOP_APP during teardown");
+    assert_eq!(messages[0].namespace, RECEIVER_NS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
+        "STOP_APP"
+    );
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::Disconnected(device) => assert_eq!(device.id, "living-room"),
+        other => panic!("expected Disconnected, got {other:?}"),
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("connection task exits after shutdown")
+        .expect("task did not panic");
+    assert!(pipe.is_closed(), "socket closed after teardown");
+}
+
+/// The heartbeat task PINGs the receiver on the configured interval
+/// (FR-008).
+#[tokio::test(flavor = "multi_thread")]
+async fn heartbeat_pings_on_interval() {
+    let (events_tx, _events_rx) = mpsc::unbounded_channel();
+    let (commands_tx, commands_rx) = mpsc::unbounded_channel();
+    let shutdown = Shutdown::new();
+    let connector = MockConnector::new();
+    let config = ConnectionConfig {
+        heartbeat_interval: Duration::from_millis(50),
+        watchdog_timeout: Duration::from_secs(10),
+        request_timeout: Duration::from_secs(5),
+        backoff: Backoff::with_params(Duration::from_millis(20), Duration::from_millis(20), 3),
+    };
+    let task = tokio::spawn(run(
+        commands_rx,
+        events_tx,
+        shutdown,
+        connector.clone(),
+        config,
+    ));
+
+    commands_tx.send(Command::Select(test_device())).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let pipe = connector.last_pipe().expect("pipe created on connect");
+
+    let mut pings = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        let chunk = pipe.wait_outgoing(deadline.saturating_duration_since(Instant::now()));
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut cursor = std::io::Cursor::new(&chunk);
+        while let Ok(Some(payload)) = read_frame(&mut cursor) {
+            let message = decode_cast_message(&payload).expect("valid frame");
+            if message.namespace == HEARTBEAT_NS
+                && serde_json::from_str::<serde_json::Value>(&message.payload_utf8).unwrap()["type"]
+                    == "PING"
+            {
+                pings += 1;
+            }
+        }
+    }
+    // Writes serialize behind the reader's read-hold (≈100ms), so the
+    // observed cadence is slower than the 50ms interval.
+    assert!(
+        pings >= 2,
+        "expected several PINGs in 1s at 50ms interval, got {pings}"
+    );
+
+    pipe.close();
+    commands_tx.send(Command::Shutdown).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("task exits after shutdown")
+        .expect("task did not panic");
+}
+
+/// PONGs reset the heartbeat watchdog; the connection stays alive while
+/// they keep arriving and the watchdog never fires (FR-008).
+#[tokio::test(flavor = "multi_thread")]
+async fn pong_resets_watchdog_and_events_flow() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (commands_tx, commands_rx) = mpsc::unbounded_channel();
+    let shutdown = Shutdown::new();
+    let connector = MockConnector::new();
+    let task = tokio::spawn(run(
+        commands_rx,
+        events_tx,
+        shutdown,
+        connector.clone(),
+        test_config(),
+    ));
+
+    commands_tx.send(Command::Select(test_device())).unwrap();
+    expect_connected(&mut events_rx).await;
+    let pipe = connector.last_pipe().expect("pipe created on connect");
+
+    // Keep PONGing (60ms < 200ms watchdog); connection must survive.
+    // PONGs must keep flowing during the no-disconnect window: once they
+    // stop, the watchdog deadline (last PONG + 200ms) can land inside it
+    // and fire legitimately.
+    let pipe_for_pongs = pipe.clone();
+    let ponger = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            pipe_for_pongs.push_incoming(&cast_frame(
+                TRANSPORT_ID,
+                SOURCE_ID,
+                HEARTBEAT_NS,
+                r#"{"type":"PONG"}"#,
+            ));
+        }
+    });
+    tokio::time::timeout(Duration::from_millis(600), events_rx.recv())
+        .await
+        .expect_err("no disconnect while PONGs keep arriving");
+    ponger.abort();
+
+    pipe.close();
     commands_tx.send(Command::Shutdown).unwrap();
     tokio::time::timeout(Duration::from_secs(2), task)
         .await
