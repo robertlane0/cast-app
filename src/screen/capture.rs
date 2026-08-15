@@ -174,7 +174,8 @@ pub fn monitor_resolution(name: &str) -> Result<(u32, u32), String> {
 /// The thread pushes raw RGBA frames into `frames` (drop-oldest backpressure)
 /// at 30 fps, signals resolution changes through `resolution_request`, stops
 /// on `stop`, and reports a permanent failure through `on_error` after
-/// [`MAX_CONSECUTIVE_FAILURES`] consecutive capture errors (spec §3.3).
+/// [`MAX_CONSECUTIVE_FAILURES`] consecutive capture errors (spec §3.3) or
+/// consecutive monitor re-acquire failures (counted independently).
 pub fn start_capture(
     monitor_name: String,
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
@@ -214,6 +215,9 @@ pub fn start_capture(
 /// The capture loop: pace to [`CAPTURE_RATE`], convert to RGBA, signal
 /// resolution changes, count failures. Public so integration tests can drive
 /// it with a [`ScriptedSource`] (same pattern as `cast::connection::test_support`).
+///
+/// Capture and monitor re-acquire failures are counted independently: a
+/// successful capture no longer masks persistent re-acquire failures (ISS-007).
 pub fn run_capture<S: FrameSource>(
     mut source: S,
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
@@ -223,7 +227,8 @@ pub fn run_capture<S: FrameSource>(
     shutdown: Shutdown,
 ) {
     let interval = Duration::from_secs_f64(1.0 / CAPTURE_RATE as f64);
-    let mut failures: u32 = 0;
+    let mut capture_failures: u32 = 0;
+    let mut reacquire_failures: u32 = 0;
     let mut expected: Option<(u32, u32)> = None;
     let mut frame_count: u32 = 0;
 
@@ -231,7 +236,7 @@ pub fn run_capture<S: FrameSource>(
         let started = Instant::now();
         match source.capture_frame() {
             Ok(frame) => {
-                failures = 0;
+                capture_failures = 0;
                 let size = (frame.width, frame.height);
                 if expected != Some(size) {
                     expected = Some(size);
@@ -244,11 +249,11 @@ pub fn run_capture<S: FrameSource>(
                 frames.push(bytes);
             }
             Err(error) => {
-                failures += 1;
-                tracing::warn!(%error, failures, "screen capture failed");
-                if failures >= MAX_CONSECUTIVE_FAILURES {
+                capture_failures += 1;
+                tracing::warn!(capture_failures, %error, "screen capture failed");
+                if capture_failures >= MAX_CONSECUTIVE_FAILURES {
                     on_error(&format!(
-                        "screen capture failed {failures} times in a row: {error}"
+                        "screen capture failed {capture_failures} times in a row: {error}"
                     ));
                     break;
                 }
@@ -257,12 +262,14 @@ pub fn run_capture<S: FrameSource>(
         frame_count += 1;
         if frame_count % MONITOR_REACQUIRE_INTERVAL == 0 {
             if let Err(error) = source.reacquire() {
-                failures += 1;
-                tracing::warn!(%error, "monitor re-acquire failed");
-                if failures >= MAX_CONSECUTIVE_FAILURES {
+                reacquire_failures += 1;
+                tracing::warn!(reacquire_failures, %error, "monitor re-acquire failed");
+                if reacquire_failures >= MAX_CONSECUTIVE_FAILURES {
                     on_error(&format!("monitor lost: {error}"));
                     break;
                 }
+            } else {
+                reacquire_failures = 0;
             }
         }
         if let Some(remaining) = interval.checked_sub(started.elapsed()) {
@@ -280,21 +287,31 @@ fn lock(slot: &Mutex<Option<(u32, u32)>>) -> MutexGuard<'_, Option<(u32, u32)>> 
 /// Always compiled (same pattern as `cast::connection::test_support`).
 pub struct ScriptedSource {
     script: Vec<Result<Frame, String>>,
-    reacquire_result: Result<(), String>,
+    reacquire_script: Vec<Result<(), String>>,
     cursor: usize,
+    reacquire_cursor: usize,
 }
 
 impl ScriptedSource {
     pub fn new(script: Vec<Result<Frame, String>>) -> Self {
         Self {
             script,
-            reacquire_result: Ok(()),
+            reacquire_script: vec![Ok(())],
             cursor: 0,
+            reacquire_cursor: 0,
         }
     }
 
     pub fn with_reacquire(mut self, result: Result<(), String>) -> Self {
-        self.reacquire_result = result;
+        self.reacquire_script = vec![result];
+        self
+    }
+
+    /// Cycle through `results` on every re-acquire call (wraps around).
+    pub fn with_reacquire_script(mut self, results: Vec<Result<(), String>>) -> Self {
+        if !results.is_empty() {
+            self.reacquire_script = results;
+        }
         self
     }
 }
@@ -312,7 +329,10 @@ impl FrameSource for ScriptedSource {
     }
 
     fn reacquire(&mut self) -> Result<(), String> {
-        self.reacquire_result.clone()
+        let result =
+            self.reacquire_script[self.reacquire_cursor % self.reacquire_script.len()].clone();
+        self.reacquire_cursor += 1;
+        result
     }
 }
 
@@ -505,5 +525,65 @@ mod tests {
             Shutdown::new(),
         );
         assert_eq!(frames.len(), 2);
+    }
+
+    #[test]
+    fn reacquire_failures_are_not_masked_by_successful_captures() {
+        // Larger queue than `context()` so the frame count stays observable.
+        let frames = Arc::new(BoundedDropOldest::new(500));
+        let stop = Arc::new(AtomicBool::new(false));
+        let resolution = Arc::new(Mutex::new(None));
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        // Every capture succeeds; only the periodic re-acquire fails.
+        let source = ScriptedSource::new(vec![Ok(empty_frame(2, 2)); 200])
+            .with_reacquire(Err("monitor gone".into()));
+        run_capture(
+            source,
+            Arc::clone(&frames),
+            Arc::clone(&stop),
+            Arc::clone(&resolution),
+            record_errors(Arc::clone(&errors)),
+            Shutdown::new(),
+        );
+        // One re-acquire failure per MONITOR_REACQUIRE_INTERVAL frames: five
+        // consecutive failures stop the loop even though capture always won.
+        let reported = errors.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(reported.len(), 1);
+        assert!(reported[0].contains("monitor lost"));
+        assert_eq!(
+            frames.len(),
+            MAX_CONSECUTIVE_FAILURES as usize * MONITOR_REACQUIRE_INTERVAL as usize
+        );
+    }
+
+    #[test]
+    fn reacquire_failures_are_reset_on_reacquire_success() {
+        // Larger queue than `context()` so the frame count stays observable.
+        let frames = Arc::new(BoundedDropOldest::new(500));
+        let stop = Arc::new(AtomicBool::new(false));
+        let resolution = Arc::new(Mutex::new(None));
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        // Failing re-acquires interleaved with a success never reach five in
+        // a row, so the loop must keep running.
+        let source =
+            ScriptedSource::new(vec![Ok(empty_frame(2, 2)); 200]).with_reacquire_script(vec![
+                Err("flaky".into()),
+                Err("flaky".into()),
+                Err("flaky".into()),
+                Ok(()),
+            ]);
+        run_capture(
+            source,
+            Arc::clone(&frames),
+            Arc::clone(&stop),
+            Arc::clone(&resolution),
+            record_errors(Arc::clone(&errors)),
+            Shutdown::new(),
+        );
+        // Script exhausted: the final capture failure trips the counter.
+        let reported = errors.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(reported.len(), 1);
+        assert!(reported[0].contains("failed 5 times"));
+        assert_eq!(frames.len(), 200);
     }
 }

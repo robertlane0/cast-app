@@ -1,24 +1,5 @@
 ## Issues
 
-### ISS-007 · 🟡 Medium · Correctness — Capture failure counter conflates reacquire and capture errors
-
-**File:** [`src/screen/capture.rs`](./cast-app/src/screen/capture.rs#L232-L260)  
-**Evidence:**
-```rust
-// L232-234: Successful capture resets failures to 0
-Ok(frame) => { failures = 0; ... }
-// L259-260: Reacquire failure increments
-if let Err(error) = source.reacquire() { failures += 1; ... }
-```
-
-**Description:** The `MAX_CONSECUTIVE_FAILURES` (5) counter is shared between capture and reacquire errors. A reacquire failure increments `failures`, but a subsequent successful `capture_frame()` on the old handle resets it to 0, masking persistent monitor reconnection failures.
-
-**Root Cause:** Single counter for two independent failure domains.
-
-**Recommended Fix:** Track reacquire failures independently, or only reset `failures` to 0 after both capture and reacquire succeed.
-
----
-
 ### ISS-008 · 🟡 Medium · Dependencies — `cargo-deny` missing `[sources]` enforcement
 
 **File:** [`deny.toml`](./cast-app/deny.toml)  
