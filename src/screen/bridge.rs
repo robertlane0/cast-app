@@ -483,7 +483,11 @@ fn spawn_stdout_reader(
             tracing::debug!("encoder stdout reader finished");
         });
     if let Ok(reader) = reader {
-        lock(&reader_handles).push(reader);
+        // Reap finished readers from earlier encoder generations before
+        // accumulating the new handle (ISS-006).
+        let mut handles = lock(&reader_handles);
+        handles.retain(|handle| !handle.is_finished());
+        handles.push(reader);
     } else {
         tracing::warn!("failed to spawn the encoder stdout reader");
     }

@@ -1,25 +1,5 @@
 ## Issues
 
-### ISS-006 · 🟡 Medium · Correctness — Reader thread JoinHandles accumulate unboundedly
-
-**File:** [`src/screen/bridge.rs`](./cast-app/src/screen/bridge.rs#L486)  
-**Evidence:**
-```rust
-lock(&reader_handles).push(reader);
-```
-
-**Description:** When the monitor resolution changes, the controller restarts ffmpeg and spawns a new stdout reader thread, pushing its handle into `reader_handles`. Old reader threads exit when their stdout EOF arrives, but their `JoinHandle` is never reaped until `ScreenBridge::join()`. Frequent resolution changes (e.g., docking/undocking a laptop) cause unbounded growth.
-
-**Root Cause:** No periodic cleanup of finished handles.
-
-**Recommended Fix:** Before pushing a new handle, drain finished handles from the vector:
-```rust
-handles.retain(|h| !h.is_finished());
-handles.push(reader);
-```
-
----
-
 ### ISS-007 · 🟡 Medium · Correctness — Capture failure counter conflates reacquire and capture errors
 
 **File:** [`src/screen/capture.rs`](./cast-app/src/screen/capture.rs#L232-L260)  
