@@ -593,7 +593,10 @@ async fn live_screen_stream_busy_is_503() {
         .expect("second GET");
     assert_eq!(second.status().as_u16(), 503);
     assert_eq!(
-        second.headers().get("content-length").expect("content-length"),
+        second
+            .headers()
+            .get("content-length")
+            .expect("content-length"),
         "4",
         "503 Content-Length must match the body"
     );
