@@ -19,7 +19,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 fn main() -> eframe::Result {
     println!("cast-app v{}", env!("CARGO_PKG_VERSION"));
 
-    let log_dir = init_logging();
+    let (log_dir, _log_guard) = init_logging();
 
     tracing::info!(
         log_dir = %log_dir.display(),
@@ -57,11 +57,11 @@ fn main() -> eframe::Result {
 /// a terminal, capped at INFO so debug noise stays out of the console) and a
 /// non-blocking file layer writing `cast-app.log` in the platform log
 /// directory (AGENTS.md §12, Phase 12).
-fn init_logging() -> PathBuf {
+fn init_logging() -> (PathBuf, tracing_appender::non_blocking::WorkerGuard) {
     let log_dir = log_file_dir();
     let filter = env_filter();
     let file_appender = tracing_appender::rolling::never(&log_dir, "cast-app.log");
-    let (file_writer, _file_guard) = tracing_appender::non_blocking(file_appender);
+    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
     let stdout_writer = std::io::stdout.with_max_level(tracing::Level::INFO);
 
     tracing_subscriber::registry()
@@ -78,7 +78,7 @@ fn init_logging() -> PathBuf {
                 .with_filter(filter),
         )
         .init();
-    log_dir
+    (log_dir, file_guard)
 }
 
 /// The `CAST_APP_LOG` filter, falling back to `RUST_LOG` and finally `info`

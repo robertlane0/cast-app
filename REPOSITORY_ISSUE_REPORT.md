@@ -1,36 +1,5 @@
 ## Issues
 
-### ISS-001 · 🔴 Critical · Correctness — File log guard dropped immediately
-
-**File:** [`src/main.rs`](./cast-app/src/main.rs#L64)  
-**Evidence:**
-```rust
-// src/main.rs:64
-let (file_writer, _file_guard) = tracing_appender::non_blocking(file_appender);
-```
-
-**Description:** The `_file_guard` returned by `tracing_appender::non_blocking()` is a `WorkerGuard` that keeps the background writer thread alive. The underscore prefix is a naming convention, but `_file_guard` is a local variable in `init_logging()` — it is dropped when the function returns, killing the non-blocking writer thread. **All file logging silently stops after initialization completes.**
-
-**Root Cause:** `_file_guard` has function-local scope; the variable is not returned or stored in a static.
-
-**Recommended Fix:** Return the guard from `init_logging()` and hold it alive for the entire application lifetime in `main()`:
-```rust
-fn init_logging() -> (PathBuf, tracing_appender::non_blocking::WorkerGuard) {
-    // ...
-    (log_dir, _file_guard)
-}
-
-fn main() -> eframe::Result {
-    let (log_dir, _log_guard) = init_logging();
-    // _log_guard lives until main() returns
-    // ...
-}
-```
-
-**Tests to Add:** Integration test that writes a log message after `init_logging()` returns and asserts the log file is non-empty.
-
----
-
 ### ISS-002 · 🟠 High · Correctness — Content-Length/body mismatch in 503 response
 
 **File:** [`src/media/server.rs`](./cast-app/src/media/server.rs#L466-L469)  
