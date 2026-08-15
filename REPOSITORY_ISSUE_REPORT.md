@@ -1,27 +1,5 @@
 ## Issues
 
-### ISS-004 · 🟡 Medium · Security — URL proxy has no SSRF protection for private IPs
-
-**File:** [`src/media/url_proxy.rs`](./cast-app/src/media/url_proxy.rs#L56-L65)  
-**Evidence:**
-```rust
-// src/media/url_proxy.rs:56-65
-pub fn validate_url(&self, raw: &str) -> Result<reqwest::Url, ProxyError> {
-    let url = reqwest::Url::parse(raw)?;
-    if !url.username().is_empty() || url.password().is_some() { return Err(ProxyError::Userinfo); }
-    if url.host_str().is_none() { return Err(ProxyError::MissingHost); }
-    Ok(url)
-}
-```
-
-**Description:** URL validation rejects userinfo and missing hosts, but does not block private/link-local/loopback IP ranges (e.g., `http://169.254.169.254/`, `http://127.0.0.1:8080/`, `http://[::1]/`). A user (or a crafted URL) could use the proxy to reach cloud metadata services or internal services.
-
-**Root Cause:** The spec only mandates userinfo rejection. The threat model assumes a trusted local user, but the proxy is accessible from the LAN (ISS-002).
-
-**Recommended Fix:** Add hostname/IP validation that rejects private RFC 1918, link-local, loopback, and cloud metadata ranges. Alternatively, document this as a known limitation.
-
----
-
 ### ISS-005 · 🟡 Medium · Correctness — GUI busy-loops while file picker is open
 
 **File:** [`src/app.rs`](./cast-app/src/app.rs#L447-L449)  
