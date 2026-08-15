@@ -1,18 +1,5 @@
 ## Issues
 
-### ISS-015 · 🔵 Low · Architecture — `xtask` binary never executed in CI
-
-**File:** [`xtask/forbid_unsafe.rs`](./cast-app/xtask/forbid_unsafe.rs)  
-**Evidence:** CI runs `scripts/forbid-unsafe-check.sh` but never `cargo run -p xtask`.
-
-**Description:** The `xtask` binary is a Rust reimplementation of the shell unsafe check, but it is never invoked in CI. This is dead code in the CI pipeline.
-
-**Root Cause:** The shell script was sufficient; the xtask was scaffolded per AGENTS.md but never wired in.
-
-**Recommended Fix:** Either add `cargo run -p xtask` to CI, or remove the xtask and document the shell script as the canonical unsafe check.
-
----
-
 ### ISS-016 · 🔵 Low · Architecture — `xtask` sensitive to working directory
 
 **File:** [`xtask/forbid_unsafe.rs`](./cast-app/xtask/forbid_unsafe.rs)  

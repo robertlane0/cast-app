@@ -138,7 +138,7 @@ cargo test --features e2e-cast -- --ignored --test-threads=1
 
 CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
 `fmt --check` → `clippy -D warnings` → `test` → `build` → `forbid-unsafe-check.sh`
-→ `cargo deny check`.
+→ `cargo run -p xtask` → `cargo deny check`.
 
 ---
 

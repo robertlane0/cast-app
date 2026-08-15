@@ -72,9 +72,15 @@ jobs:
       - name: build (release profile)
         run: cargo build --release
 
-      - name: forbid-unsafe-check
+      - name: forbid-unsafe-check (shell script)
         shell: bash
         run: ./scripts/forbid-unsafe-check.sh
+
+      # The xtask binary is the programmatic reimplementation of the same
+      # policy gate (AGENTS.md Phase 0); keep it exercised on every run so it
+      # cannot rot into dead code.
+      - name: forbid-unsafe-check (xtask)
+        run: cargo run -p xtask
 
       - name: cargo deny check (Linux)
         if: runner.os == 'Linux'
