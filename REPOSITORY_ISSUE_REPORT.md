@@ -1,25 +1,5 @@
 ## Issues
 
-### ISS-010 · 🟡 Medium · Dependencies — Cargo.toml version drift from AGENTS.md spec
-
-**File:** [`Cargo.toml`](./cast-app/Cargo.toml)  
-**Evidence:**
-| Dependency | AGENTS.md spec | Cargo.toml actual |
-|---|---|---|
-| `eframe` | `0.29` | `0.36` |
-| `egui` | `0.29` | `0.36` |
-| `rfd` | `0.15` | `0.17` |
-| `xcap` | `0.4` | `0.9` |
-| `thiserror` | `1` → now `2.x` available | `1` (OK) |
-
-**Description:** The implementation used newer versions than the spec prescribed. While this is documented in AGENTS.md lessons, the spec section (§3.2) was never updated to match, creating a confusing discrepancy for new contributors.
-
-**Root Cause:** Implementation discovered that newer versions were needed (eframe 0.36 API changes documented in Phase 9 lessons).
-
-**Recommended Fix:** Update `AGENTS.md` §3.2 to reflect the actual pinned versions.
-
----
-
 ### ISS-011 · 🟡 Medium · Correctness — `#![forbid(unsafe_code)]` in non-crate-root files
 
 **File:** All 30 `.rs` files in `src/`  

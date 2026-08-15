@@ -66,15 +66,17 @@ edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-eframe = "0.29"            # pin latest stable at impl start
-egui   = "0.29"
-rfd    = "0.15"
+eframe = "0.36"            # pin latest stable at impl start
+egui   = "0.36"
+rfd    = "0.17"
 tokio  = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-xcap   = "0.4"
+xcap   = "0.9"
 serde  = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps JSON object key order so namespace payloads are
+# byte-exact against the spec examples (`03-cast-engine.md` §6).
+serde_json = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
@@ -82,10 +84,14 @@ thiserror = "1"
 anyhow    = "1"
 bytes     = "1"
 http      = "1"
+if-addrs = "0.15.0"
+url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+rcgen = "0.14.7"
 tokio-test = "0.4"
+futures-util = "0.3"
 
 [profile.release]
 lto = "thin"
