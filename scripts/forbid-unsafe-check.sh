@@ -2,7 +2,7 @@
 # Enforce the repository's memory-safety policy: any Rust line containing the
 # forbidden keyword that is not the mandated `#![forbid(unsafe_code)]`
 # attribute fails the check. Scans src/, tests/, and xtask/.
-set -u
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIRS=("$ROOT/src" "$ROOT/tests" "$ROOT/xtask")

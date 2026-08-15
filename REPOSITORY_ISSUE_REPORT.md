@@ -1,18 +1,5 @@
 ## Issues
 
-### ISS-017 · 🔵 Low · Maintainability — `forbid-unsafe-check.sh` missing `set -eo pipefail`
-
-**File:** [`scripts/forbid-unsafe-check.sh`](./cast-app/scripts/forbid-unsafe-check.sh#L5)  
-**Evidence:** `set -u` only; missing `set -e` and `set -o pipefail`.
-
-**Description:** Without `set -e`, intermediate command failures in the script are silently swallowed. Without `set -o pipefail`, a failure in the first command of a pipe is masked by the success of the second.
-
-**Root Cause:** Minimal shell hardening.
-
-**Recommended Fix:** Change to `set -euo pipefail`.
-
----
-
 ### ISS-018 · 🔵 Low · Maintainability — `connection.rs` is 1,774 lines
 
 **File:** [`src/cast/connection.rs`](./cast-app/src/cast/connection.rs)  
