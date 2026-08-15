@@ -1,29 +1,5 @@
 ## Issues
 
-### ISS-003 · 🟠 High · Correctness — `ffmpeg` wait_graceful can block indefinitely
-
-**File:** [`src/screen/ffmpeg.rs`](./cast-app/src/screen/ffmpeg.rs#L106-L118)  
-**Evidence:**
-```rust
-// src/screen/ffmpeg.rs:106-118
-let _ = self.child.kill();
-let deadline = Instant::now() + Duration::from_secs(2);
-loop {
-    if let Some(status) = self.child.try_wait()? { return Ok(status); }
-    if Instant::now() >= deadline { break; }
-    std::thread::sleep(WAIT_POLL);
-}
-self.child.wait() // blocks indefinitely if SIGKILL is ignored
-```
-
-**Description:** After issuing `kill()` and polling for 2 seconds, the fallback is a blocking `self.child.wait()`. If the ffmpeg process is in an uninterruptible state (zombie, D-state), this call hangs forever, deadlocking the screen controller thread and preventing clean application shutdown.
-
-**Root Cause:** No timeout on the final `wait()`.
-
-**Recommended Fix:** If the 2-second post-kill deadline expires, log a severe warning and return an error status instead of blocking on `wait()`. The `Drop` impl already does `kill()` + `wait()` as a last resort, but the controller thread should not hang.
-
----
-
 ### ISS-004 · 🟡 Medium · Security — URL proxy has no SSRF protection for private IPs
 
 **File:** [`src/media/url_proxy.rs`](./cast-app/src/media/url_proxy.rs#L56-L65)  

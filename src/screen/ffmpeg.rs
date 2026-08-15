@@ -89,7 +89,10 @@ impl Ffmpeg {
 
     /// The spec §4.2 teardown: wait up to `grace` for the child to exit on
     /// its own (the caller must have closed stdin so ffmpeg can finalize the
-    /// stream), then kill it. Returns the final exit status.
+    /// stream), then kill it. Returns the final exit status, or an error if
+    /// the child survives the post-kill wait (e.g. an uninterruptible D-state
+    /// process) — the caller must never block on [`std::process::Child::wait`]
+    /// because that can hang the screen controller thread forever.
     pub fn wait_graceful(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         let deadline = Instant::now() + grace;
         loop {
@@ -113,9 +116,12 @@ impl Ffmpeg {
             }
             std::thread::sleep(WAIT_POLL);
         }
-        // `wait()` reaps if try_wait raced with the OS; on an already-reaped
-        // child `wait()` errors and the try_wait loop above would have won.
-        self.child.wait()
+        let error = io::Error::new(
+            io::ErrorKind::TimedOut,
+            "ffmpeg survived SIGKILL (uninterruptible state); leaving it for the OS to reap",
+        );
+        tracing::error!("{error}");
+        Err(error)
     }
 }
 
