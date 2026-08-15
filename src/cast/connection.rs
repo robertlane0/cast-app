@@ -1284,6 +1284,17 @@ pub mod test_support {
             std::mem::take(&mut self.lock().outgoing)
         }
 
+        /// Re-inject bytes that were already taken out of the outgoing buffer
+        /// (used by poll helpers that must not consume frames after the one
+        /// they matched); they are prepended ahead of any newer bytes.
+        pub fn push_outgoing(&self, bytes: &[u8]) {
+            let mut state = self.lock();
+            let mut combined = bytes.to_vec();
+            combined.extend_from_slice(&state.outgoing);
+            state.outgoing = combined;
+            self.core.outgoing.notify_all();
+        }
+
         /// Simulate socket shutdown; unblocks the transport's reader with
         /// clean EOF.
         pub fn close(&self) {

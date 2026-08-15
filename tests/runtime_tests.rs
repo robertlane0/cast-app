@@ -156,6 +156,74 @@ fn drain_wire(pipe: &MockPipe, window: Duration) -> Vec<(String, serde_json::Val
     out
 }
 
+/// Poll the cast wire until a frame matching `predicate` arrives, draining
+/// earlier frames along the way. Unlike `drain_wire` the deadline is absolute
+/// (5s, mirroring `expect_event_matching`), so a cold CI runner cannot starve
+/// the assertion by delaying the frame past a fixed window.
+fn expect_wire_frame(
+    pipe: &MockPipe,
+    message: &str,
+    mut predicate: impl FnMut(&str, &serde_json::Value) -> bool,
+) -> (String, serde_json::Value) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut accumulated: Vec<u8> = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "{message}");
+        let chunk = pipe.wait_outgoing(remaining.min(Duration::from_millis(50)));
+        if !chunk.is_empty() {
+            accumulated.extend_from_slice(&chunk);
+        }
+        if chunk.is_empty() && pipe.is_closed() {
+            panic!("{message}");
+        }
+
+        // Parse complete frames from the front; a partial trailing frame is
+        // kept for the next poll.
+        let mut cursor = Cursor::new(&accumulated);
+        let mut consumed = 0usize;
+        loop {
+            let before = cursor.position() as usize;
+            let payload = match read_frame(&mut cursor) {
+                Ok(Some(payload)) => payload,
+                Ok(None) | Err(_) => {
+                    cursor.set_position(before as u64);
+                    break;
+                }
+            };
+            let message = decode_cast_message(&payload).expect("valid frame");
+            let json =
+                serde_json::from_str(&message.payload_utf8).unwrap_or(serde_json::Value::Null);
+            consumed = cursor.position() as usize;
+            if predicate(&message.namespace, &json) {
+                // Re-inject anything that arrived after the matched frame so a
+                // later poll can still see it (`wait_outgoing` already drained
+                // the pipe buffer into `accumulated`).
+                let trailing = accumulated[consumed..].to_vec();
+                if !trailing.is_empty() {
+                    pipe.push_outgoing(&trailing);
+                }
+                return (message.namespace, json);
+            }
+        }
+        accumulated.drain(..consumed);
+    }
+}
+
+/// Poll until `n` frames matching `predicate` have arrived (each via
+/// [`expect_wire_frame`]); fails the test if any is missing before the
+/// deadline.
+fn expect_n_wire_frames(
+    pipe: &MockPipe,
+    n: usize,
+    message: &str,
+    mut predicate: impl FnMut(&str, &serde_json::Value) -> bool,
+) {
+    for _ in 0..n {
+        expect_wire_frame(pipe, message, &mut predicate);
+    }
+}
+
 /// The supervisor aggregates events from every task into the single GUI
 /// channel and routes commands to the owning task.
 #[test]
@@ -199,22 +267,19 @@ fn events_aggregate_and_commands_route() {
     // Volume + mute route to the cast task.
     command_tx.send(AppCommand::SetVolume(0.25)).unwrap();
     command_tx.send(AppCommand::Mute(true)).unwrap();
-    let wire = drain_wire(&pipe, Duration::from_millis(300));
-    let set_volumes = wire
-        .iter()
-        .filter(|(ns, json)| ns == RECEIVER_NS && json["type"] == "SET_VOLUME")
-        .count();
-    assert_eq!(set_volumes, 2, "SetVolume and Mute each send SET_VOLUME");
+    expect_n_wire_frames(
+        &pipe,
+        2,
+        "SetVolume and Mute each send SET_VOLUME",
+        |ns, json| ns == RECEIVER_NS && json["type"] == "SET_VOLUME",
+    );
 
     // Rescan must not disturb routing (mDNS task stays alive).
     command_tx.send(AppCommand::Rescan).unwrap();
     command_tx.send(AppCommand::SetVolume(0.5)).unwrap();
-    let wire = drain_wire(&pipe, Duration::from_millis(300));
-    assert!(
-        wire.iter()
-            .any(|(ns, json)| ns == RECEIVER_NS && json["type"] == "SET_VOLUME"),
-        "SET_VOLUME routed after Rescan"
-    );
+    expect_wire_frame(&pipe, "SET_VOLUME routed after Rescan", |ns, json| {
+        ns == RECEIVER_NS && json["type"] == "SET_VOLUME"
+    });
 
     // Unresolvable monitor → StreamError (ffmpeg-missing or
     // monitor-missing: both fail deterministically).
@@ -268,12 +333,9 @@ fn fatal_mdns_setup_surfaces_error_and_rescan_revives() {
     // discovery task restarts. Either way routing must keep working.
     command_tx.send(AppCommand::Rescan).unwrap();
     command_tx.send(AppCommand::SetVolume(1.0)).unwrap();
-    let wire = drain_wire(&pipe, Duration::from_millis(300));
-    assert!(
-        wire.iter()
-            .any(|(ns, json)| ns == RECEIVER_NS && json["type"] == "SET_VOLUME"),
-        "SET_VOLUME routed after Rescan"
-    );
+    expect_wire_frame(&pipe, "SET_VOLUME routed after Rescan", |ns, json| {
+        ns == RECEIVER_NS && json["type"] == "SET_VOLUME"
+    });
 
     backend.shutdown();
 }
@@ -308,11 +370,10 @@ fn coordinated_shutdown_order() {
         )))
         .unwrap();
     command_tx.send(AppCommand::Play).unwrap();
-    let wire = drain_wire(&pipe, Duration::from_millis(300));
-    assert!(
-        wire.iter()
-            .any(|(ns, json)| ns == RECEIVER_NS && json["type"] == "LAUNCH"),
-        "Play auto-launches the default receiver"
+    expect_wire_frame(
+        &pipe,
+        "Play auto-launches the default receiver",
+        |ns, json| ns == RECEIVER_NS && json["type"] == "LAUNCH",
     );
     pipe.push_incoming(&receiver_status_frame("t-9", "s-9", 0.5, false));
     assert_eq!(
@@ -322,11 +383,9 @@ fn coordinated_shutdown_order() {
             muted: false
         }
     );
-    let wire = drain_wire(&pipe, Duration::from_millis(300));
-    let load = wire
-        .iter()
-        .find(|(ns, json)| ns == MEDIA_NS && json["type"] == "LOAD")
-        .expect("queued LOAD sent once Ready");
+    let load = expect_wire_frame(&pipe, "queued LOAD sent once Ready", |ns, json| {
+        ns == MEDIA_NS && json["type"] == "LOAD"
+    });
     assert_eq!(load.1["media"]["streamType"], "BUFFERED");
     assert_eq!(load.1["media"]["contentType"], "video/mp4");
     let content_id = load.1["media"]["contentId"]
