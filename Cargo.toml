@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Robert Lane"]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [features]
 # Real-Chromecast end-to-end tests (`tests/integration/cast_e2e.rs`): the test

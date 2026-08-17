@@ -16,7 +16,7 @@
 | `src/main.rs` | stub `println!("Hello, world!")` |
 | `OVERVIEW.md` | high-level architecture (three-domain split) |
 | `specs/01-07-*.md` | full production specification set (architecture, GUI, cast engine, media proxy, screen capture, concurrency, requirements/tests) |
-| `LICENSE` | MIT, © 2026 Robert Lane |
+| `LICENSE-MIT`, `LICENSE-APACHE` | dual MIT/Apache-2.0, © 2026 Robert Lane |
 | `.gitignore` | standard Rust |
 
 Target: a zero-unsafe Rust desktop app that discovers Chromecast receivers, streams
