@@ -5,7 +5,8 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -38,6 +39,23 @@ pub enum TlsError {
 /// A TLS stream over an established Cast connection. The socket is blocking;
 /// the connection layer owns concurrency.
 pub type CastTlsStream = rustls::StreamOwned<ClientConnection, std::net::TcpStream>;
+
+/// Instrumentation gauge: the number of handshake workers currently running
+/// on the blocking pool. Every attempt increments before spawn and the worker
+/// decrements on exit (including panic, via [`InFlightGuard`]); the caller's
+/// timeout path does not need to touch it. Kept private; in-module tests use
+/// it to assert workers never accumulate.
+static IN_FLIGHT_HANDSHAKES: AtomicUsize = AtomicUsize::new(0);
+
+/// Decrements [`IN_FLIGHT_HANDSHAKES`] on drop so a panicking worker can
+/// never leak the gauge.
+struct InFlightGuard;
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_HANDSHAKES.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// Install the `ring` crypto provider once per process. rustls 0.23 requires
 /// an explicit provider; a second call returns an error, which is ignored.
@@ -134,6 +152,15 @@ pub async fn connect(addr: SocketAddr) -> Result<CastTlsStream, TlsError> {
 
 /// [`connect`] with an explicit handshake deadline (testable with short
 /// timeouts). The TCP connect itself is bounded by the same deadline.
+///
+/// The synchronous rustls handshake runs on a `spawn_blocking` worker whose
+/// lifetime is bounded *independently* of the caller: per-op socket
+/// read/write timeouts are re-armed to the remaining handshake budget on
+/// every `complete_io` cycle, so a stalled peer cannot strand the worker —
+/// it exits (dropping the socket) at latest ~one op timeout after the
+/// deadline even if the caller's oneshot receiver is long gone
+/// (`spawn_blocking` cancellation is cooperative, so the caller's timeout
+/// cannot stop the thread by itself).
 pub async fn connect_with_timeout(
     addr: SocketAddr,
     deadline: Duration,
@@ -158,38 +185,76 @@ pub async fn connect_with_timeout(
         .set_nodelay(true)
         .map_err(|source| TlsError::Connect { addr, source })?;
 
-    // The rustls handshake API is synchronous; drive it on a blocking worker
-    // with a tokio timeout around a oneshot result channel. If the timeout
-    // fires, the socket is dropped by the worker once the TLS reads return.
+    // Drive the synchronous rustls handshake on a blocking worker with a
+    // tokio timeout around a oneshot result channel. The worker re-arms
+    // per-op socket timeouts against the remaining handshake budget, so it
+    // is guaranteed to terminate (and release the socket) near the deadline
+    // without manual intervention.
     let config = client_config().map_err(TlsError::Rustls)?;
     let server_name = ServerName::IpAddress(addr.ip().into());
+    let deadline_at = Instant::now() + deadline;
     let (tx, rx) = oneshot::channel();
 
+    IN_FLIGHT_HANDSHAKES.fetch_add(1, Ordering::Relaxed);
+    tracing::debug!(target: "cast::tls", %addr, in_flight = IN_FLIGHT_HANDSHAKES.load(Ordering::Relaxed), "TLS handshake worker started");
     let handle = tokio::task::spawn_blocking(move || {
+        let _gauge = InFlightGuard;
         let result = (|| {
             let mut conn = ClientConnection::new(Arc::new(config), server_name)?;
-            match conn.complete_io(&mut std_tcp) {
-                Ok(_) => Ok(rustls::StreamOwned::new(conn, std_tcp)),
-                // On Windows a refused peer often surfaces only when the
-                // handshake writes (WSAECONNRESET 10054) rather than at
-                // `connect`; keep the contract "refused ⇒ TlsError::Connect"
-                // on every platform.
-                Err(source)
-                    if matches!(
-                        source.kind(),
-                        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
-                    ) =>
-                {
-                    Err(TlsError::Connect { addr, source })
+            loop {
+                let remaining = deadline_at.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(TlsError::HandshakeTimeout(deadline));
                 }
-                Err(source) => Err(TlsError::Io(source)),
+                // `complete_io` blocks on each socket op; SO_RCVTIMEO /
+                // SO_SNDTIMEO expiry surfaces as WouldBlock (Linux) or
+                // TimedOut (Windows) and bounds every op to the remaining
+                // budget, which bounds the worker's total lifetime.
+                std_tcp.set_read_timeout(Some(remaining))?;
+                std_tcp.set_write_timeout(Some(remaining))?;
+                match conn.complete_io(&mut std_tcp) {
+                    // Handshake finished: return the usable stream.
+                    Ok(_) if !conn.is_handshaking() => {
+                        return Ok(rustls::StreamOwned::new(conn, std_tcp));
+                    }
+                    // No progress (op timed out or the peer stalled mid-
+                    // handshake): re-arm against the remaining budget.
+                    Ok(_) => {}
+                    Err(source)
+                        if matches!(
+                            source.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    // On Windows a refused peer often surfaces only when the
+                    // handshake writes (WSAECONNRESET 10054) rather than at
+                    // `connect`; keep the contract "refused ⇒ TlsError::Connect"
+                    // on every platform.
+                    Err(source)
+                        if matches!(
+                            source.kind(),
+                            io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        return Err(TlsError::Connect { addr, source });
+                    }
+                    Err(source) => return Err(TlsError::Io(source)),
+                }
             }
         })();
+        let ok = result.is_ok();
         let _ = tx.send(result);
+        drop(_gauge);
+        tracing::debug!(target: "cast::tls", %addr, in_flight = IN_FLIGHT_HANDSHAKES.load(Ordering::Relaxed), ok, "TLS handshake worker finished");
     });
 
     match timeout(deadline, rx).await {
-        Err(_) => Err(TlsError::HandshakeTimeout(deadline)),
+        Err(_) => {
+            // The worker is deadline-bounded and exits on its own shortly
+            // after this returns; the socket is dropped by the worker, not
+            // left stranded on a blocked thread.
+            tracing::warn!(target: "cast::tls", %addr, ?deadline, in_flight = IN_FLIGHT_HANDSHAKES.load(Ordering::Relaxed), "TLS handshake timed out; worker self-terminates");
+            Err(TlsError::HandshakeTimeout(deadline))
+        }
         Ok(Err(_)) => {
             let _ = handle.await;
             Err(TlsError::WorkerPanicked)
@@ -210,6 +275,114 @@ pub fn close_notify(stream: &mut CastTlsStream) {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    /// Poll the in-flight gauge until every handshake worker has exited, or
+    /// fail the test. Proves the deadline-bounded workers terminate on their
+    /// own without the caller awaiting them.
+    async fn wait_for_in_flight_zero() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while IN_FLIGHT_HANDSHAKES.load(Ordering::Relaxed) != 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "handshake workers leaked past the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_peer_times_out_and_worker_self_terminates() {
+        // A peer that accepts TCP but never produces TLS bytes fails with
+        // HandshakeTimeout within the configured deadline, and the blocking
+        // worker exits on its own shortly afterwards (no stranded thread).
+        install_crypto_provider();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold_open = tokio::spawn(async move {
+            let (_tcp, _peer) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let deadline = Duration::from_millis(300);
+        let started = Instant::now();
+        let result = connect_with_timeout(addr, deadline).await;
+        assert!(matches!(result, Err(TlsError::HandshakeTimeout(_))));
+        assert!(
+            started.elapsed() < deadline + Duration::from_secs(1),
+            "timeout returned late: {:?}",
+            started.elapsed()
+        );
+        wait_for_in_flight_zero().await;
+        drop(hold_open);
+    }
+
+    #[tokio::test]
+    async fn partial_tls_bytes_then_stall_times_out_and_worker_self_terminates() {
+        // A peer that sends a partial TLS record and then stalls must also
+        // time out (the handshake never completes) with no stranded worker.
+        install_crypto_provider();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold_open = tokio::spawn(async move {
+            let (mut tcp, _peer) = listener.accept().await.unwrap();
+            // Handshake record header claiming a 16-byte body; the body is
+            // never sent, so `complete_io` blocks mid-record until the op
+            // timeout fires.
+            tcp.write_all(&[0x16, 0x03, 0x01, 0x00, 0x10])
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let deadline = Duration::from_millis(300);
+        let result = connect_with_timeout(addr, deadline).await;
+        assert!(matches!(result, Err(TlsError::HandshakeTimeout(_))));
+        wait_for_in_flight_zero().await;
+        drop(hold_open);
+    }
+
+    #[tokio::test]
+    async fn many_stalled_peers_do_not_accumulate_workers() {
+        // Many simultaneous stalled peers must all time out and every worker
+        // must terminate: the in-flight gauge returns to zero, proving the
+        // blocking pool cannot accumulate stranded handshake threads.
+        install_crypto_provider();
+        const N: usize = 32;
+        let deadline = Duration::from_millis(400);
+
+        let mut addrs = Vec::with_capacity(N);
+        let mut hold_open = Vec::with_capacity(N);
+        for _ in 0..N {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            hold_open.push(tokio::spawn(async move {
+                let (_tcp, _peer) = listener.accept().await.unwrap();
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }));
+        }
+
+        let started = Instant::now();
+        let mut handles = Vec::with_capacity(N);
+        for addr in addrs {
+            handles.push(tokio::spawn(connect_with_timeout(addr, deadline)));
+        }
+        for handle in handles {
+            let result = handle.await.expect("attempt task joins");
+            assert!(matches!(result, Err(TlsError::HandshakeTimeout(_))));
+        }
+        assert!(
+            started.elapsed() < deadline + Duration::from_secs(1),
+            "all attempts should return near the deadline: {:?}",
+            started.elapsed()
+        );
+        wait_for_in_flight_zero().await;
+        for task in hold_open {
+            task.abort();
+        }
+    }
 
     fn self_signed_chain() -> Vec<CertificateDer<'static>> {
         let certified_key = rcgen::generate_simple_self_signed(vec!["cast.local".into()])

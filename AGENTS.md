@@ -323,7 +323,19 @@ acceptance criteria pass.
 > task: on a single-thread runtime the blocking call freezes the runtime so
 > timers and other tasks never advance (debugged via a hang that only
 > reproduced with blocking sockets). Rules for Phase 6: all
-> `CastTlsStream` I/O goes through `spawn_blocking`/dedicated threads.
+> `CastTlsStream` I/O goes through `spawn_blocking`/dedicated threads. The
+> handshake worker must also be deadline-bounded *on its own*: `spawn_blocking`
+> cancellation is cooperative (a caller-side timeout does not stop the
+> thread, so a stalled peer can strand it forever). `cast/tls.rs` re-arms
+> per-op socket read/write timeouts (SO_RCVTIMEO/SO_SNDTIMEO, surfaced as
+> `WouldBlock` on Linux and `TimedOut` on Windows) to the remaining handshake
+> budget on every `complete_io` cycle, so the worker always exits and drops
+> its socket at latest ~one op timeout after the deadline, independently of
+> the caller. `complete_io`'s `Ok` must NOT be treated as success — check
+> `conn.is_handshaking()` — because on a timed-out blocking socket it returns
+> `Ok` with "no progress". An in-flight worker gauge (`IN_FLIGHT_HANDSHAKES`)
+> plus tracing on worker start/finish and the caller-timeout path make
+> stranded workers observable.
 
 > **Lesson recorded (Phase 6):** three non-obvious concurrency bugs surfaced by
 > the mock-transport tests. (1) **Mutex barging:** a reader thread that
