@@ -1,6 +1,7 @@
 # CI gate per AGENTS.md §4: fmt --check -> clippy -D warnings -> test ->
-# build -> forbid-unsafe-check.sh -> cargo deny check, across the supported
-# OS matrix, with the committed Cargo.lock uploaded as an artifact.
+# build -> cargo run -p xtask (memory-safety scan) -> cargo deny check, across
+# the supported OS matrix, with the committed Cargo.lock uploaded as an
+# artifact.
 #
 # Linux needs OpenGL/EGL, GBM, and PipeWire development headers for the GUI
 # and screen-capture stacks (see the "Install Ubuntu dependencies" step).
@@ -72,14 +73,10 @@ jobs:
       - name: build (release profile)
         run: cargo build --release
 
-      - name: forbid-unsafe-check (shell script)
-        shell: bash
-        run: ./scripts/forbid-unsafe-check.sh
-
-      # The xtask binary is the programmatic reimplementation of the same
-      # policy gate (AGENTS.md Phase 0); keep it exercised on every run so it
-      # cannot rot into dead code.
-      - name: forbid-unsafe-check (xtask)
+      # The xtask binary is the single memory-safety gate (AGENTS.md Phase 0).
+      # It replaced the shell-script gate so the check runs natively on all
+      # three CI OSes without a bash dependency.
+      - name: memory-safety scan (xtask)
         run: cargo run -p xtask
 
       - name: cargo deny check (Linux)

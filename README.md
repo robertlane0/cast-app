@@ -118,7 +118,7 @@ log directory:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
-./scripts/forbid-unsafe-check.sh   # zero `unsafe` tokens in src/
+cargo run -p xtask              # zero `unsafe` tokens in src/, tests/, xtask/
 cargo deny check                   # license + ban list audit
 ```
 
@@ -144,7 +144,6 @@ src/
 tests/
   unit + integration test suites (incl. feature-gated `cast_e2e`)
 xtask/           unsafe-scan binary (CI gate)
-scripts/         forbid-unsafe-check.sh
 specs/           01–07 implementation specifications
 ```
 

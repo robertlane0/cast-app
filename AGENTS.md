@@ -172,8 +172,7 @@ cargo build
 cargo build --release
 
 # Safety & dependency audits
-./scripts/forbid-unsafe-check.sh      # grep -rn 'unsafe' src/ tests/ xtask/
-cargo run -p xtask                   # programmatic reimplementation of the same scan
+cargo run -p xtask                   # memory-safety scan of src/, tests/, xtask/
 cargo deny check                      # license + ban list
 cargo tree --duplicates               # review duplicate deps before merge
 
@@ -184,7 +183,7 @@ cargo test --features e2e-cast -- --ignored --test-threads=1
 CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
 `fmt --check` → `clippy -D warnings` (default and `e2e-cast` features) →
 `test` → `test --doc` → `e2e-cast` target compiles (`--no-run`) → `build` →
-`build --release` → `forbid-unsafe-check.sh` → `cargo run -p xtask` →
+`build --release` → `cargo run -p xtask` →
 `cargo deny check`, with the committed `Cargo.lock` uploaded as an artifact.
 
 ---
@@ -259,10 +258,7 @@ tests/
 
 xtask/
   Cargo.toml
-  forbid_unsafe.rs       # binary that scans src/ for `unsafe` tokens
-
-scripts/
-  forbid-unsafe-check.sh
+  forbid_unsafe.rs       # binary that scans src/, tests/, xtask/ for forbidden-keyword tokens
 
 rust-toolchain.toml
 deny.toml
@@ -280,10 +276,9 @@ acceptance criteria pass.
 - [x] Add `rust-toolchain.toml`, populate `Cargo.toml` (§3.2), add `deny.toml`.
 - [x] Replace `src/main.rs` with `#![forbid(unsafe_code)]` + tracing init + version banner.
 - [x] Create `src/lib.rs` with `#![forbid(unsafe_code)]` and module declarations.
-- [x] Add `scripts/forbid-unsafe-check.sh` (grep -rn `unsafe` and fail on any hit).
-- [x] Add `xtask` binary to programmatically enforce the unsafe scan.
+- [x] Add `xtask/forbid_unsafe.rs` (`cargo run -p xtask`): programmatic memory-safety scan of `src/`, `tests/`, `xtask/` (replaces the original `scripts/forbid-unsafe-check.sh` gate).
 - [x] Create empty module files with `//!` doc comments referencing their owning spec.
-- [x] **Gate:** `cargo build` clean, `forbid-unsafe-check.sh` passes, `cargo deny check` passes.
+- [x] **Gate:** `cargo build` clean, `cargo run -p xtask` passes, `cargo deny check` passes.
 
 ### Phase 1 — Foundation types (`state.rs`, `util/`)
 - [x] `state.rs`: `CastDevice { id, name, addr }`, `SourceTab`, `AppCommand`, `BackendEvent` per `02-gui.md` §4.1.
@@ -570,7 +565,6 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all
 cargo test --doc
 cargo build --release
-./scripts/forbid-unsafe-check.sh
 cargo run -p xtask
 cargo deny check
 ```
@@ -617,7 +611,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 5. Did I touch screen pipeline? Verify backpressure still drops oldest; verify no `xcap` call on GUI/tokio threads.
 6. Did I touch the GUI? Verify no new `await` or blocking call; verify `try_recv` drain remains non-blocking.
 7. `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test --all`.
-8. `./scripts/forbid-unsafe-check.sh`.
+8. `cargo run -p xtask`.
 9. Update the relevant spec's acceptance-criteria checkboxes if behavior changed.
 10. Conventional-commit message; reference requirement IDs in the body if applicable.
 
