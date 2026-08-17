@@ -12,16 +12,19 @@
 
 | Item | Current state |
 |---|---|
-| `Cargo.toml` | `name = "cast-app"`, `edition = "2024"`, **no dependencies** |
-| `src/main.rs` | stub `println!("Hello, world!")` |
+| `Cargo.toml` | `name = "cast-app"`, `edition = "2024"`, full dependency set (see §3.2), `[[bin]] fake-encoder`, `[[test]]` entries for the nested integration tests, workspace with `xtask` |
+| `src/main.rs` | entrypoint: version banner, tracing init (console + file), tokio runtime + `Backend::start()`, eframe GUI launch, coordinated shutdown |
+| `src/lib.rs` | crate root, `#![forbid(unsafe_code)]`, module declarations (`app`, `cast`, `media`, `runtime`, `screen`, `state`, `util`) |
 | `OVERVIEW.md` | high-level architecture (three-domain split) |
-| `specs/01-07-*.md` | full production specification set (architecture, GUI, cast engine, media proxy, screen capture, concurrency, requirements/tests) |
+| `specs/01-07-*.md` | full production specification set (architecture, GUI, cast engine, media proxy, screen capture, concurrency, requirements/tests); all acceptance-criteria checkboxes checked |
 | `LICENSE-MIT`, `LICENSE-APACHE` | dual MIT/Apache-2.0, © 2026 Robert Lane |
 | `.gitignore` | standard Rust |
+| Implementation status | Phases 0–12 complete; only the manual per-OS verification runs (Phase 12, §10, §11) remain, as they require physical Chromecasts |
 
-Target: a zero-unsafe Rust desktop app that discovers Chromecast receivers, streams
-local files / remote URLs / captured displays to them, with a fully hand-rolled
-Cast V2 stack and an external `ffmpeg` subprocess for video encoding.
+Target (achieved): a zero-unsafe Rust desktop app that discovers Chromecast
+receivers, streams local files / remote URLs / captured displays to them, with a
+fully hand-rolled Cast V2 stack and an external `ffmpeg` subprocess for video
+encoding.
 
 ---
 
@@ -57,7 +60,7 @@ channel = "stable"
 components = ["rustfmt", "clippy"]
 ```
 
-### 3.2 `Cargo.toml` (target shape)
+### 3.2 `Cargo.toml` (as committed)
 
 ```toml
 [package]
@@ -65,6 +68,14 @@ name = "cast-app"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+authors = ["Robert Lane"]
+license = "MIT OR Apache-2.0"
+
+[features]
+# Real-Chromecast end-to-end tests (`tests/integration/cast_e2e.rs`): the test
+# crate is empty without this feature. Run with:
+#   cargo test --features e2e-cast -- --ignored --test-threads=1
+e2e-cast = []
 
 [dependencies]
 eframe = "0.36"            # pin latest stable at impl start
@@ -94,6 +105,31 @@ rcgen = "0.14.7"
 tokio-test = "0.4"
 futures-util = "0.3"
 
+# Cross-platform fake encoder for `tests/screen_pipeline_tests.rs` (ISS-012):
+# a compiled binary replaces the Unix-only `/bin/sh` fake-encoder scripts so
+# the screen-bridge tests also run on Windows CI. The tests locate it via the
+# `CARGO_BIN_EXE_fake-encoder` environment variable.
+[[bin]]
+name = "fake-encoder"
+path = "tests/support/fake_encoder.rs"
+
+# Nested test files are not auto-discovered by cargo.
+[[test]]
+name = "http_e2e"
+path = "tests/integration/http_e2e.rs"
+
+[[test]]
+name = "screen_e2e"
+path = "tests/integration/screen_e2e.rs"
+
+# Feature-gated: empty unless `--features e2e-cast` (see `[features]`).
+[[test]]
+name = "cast_e2e"
+path = "tests/integration/cast_e2e.rs"
+
+[workspace]
+members = ["xtask"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -104,8 +140,16 @@ panic = "abort"
 ### 3.3 `deny.toml` (cargo-deny)
 
 - Ban: `rust-cast`, `mdns`, `mdns-sd`, `prost`, `prost-build`, `ffmpeg-sys-next`,
-  `libav`, any crate whose name contains `native-tls`.
-- Allow: only MPL/Apache/MIT/BSD/Unicode-3.0 licenses.
+  `libav`, the full `libav*-sys` family, `native-tls`, `tokio-native-tls`.
+- `[bans] multiple-versions = "warn"` so duplicate transitive deps surface in
+  `cargo deny check`.
+- Allow: only MPL/Apache/MIT/BSD/Unicode-3.0 licenses, with per-crate exceptions
+  for permissive licenses the pinned GUI/TLS stack pulls in transitively
+  (BSL-1.0, ISC, Zlib, OFL-1.1, Ubuntu-font-1.0, CDLA-Permissive-2.0).
+- `[advisories]`: a curated ignore list for known-unfixable advisories
+  (currently `RUSTSEC-2026-0192`, unmaintained `ttf-parser` via the Linux
+  GUI font theme).
+- `[sources]`: `unknown-registry = "deny"`, `unknown-git = "deny"`.
 
 ---
 
@@ -129,6 +173,7 @@ cargo build --release
 
 # Safety & dependency audits
 ./scripts/forbid-unsafe-check.sh      # grep -rn 'unsafe' src/ tests/ xtask/
+cargo run -p xtask                   # programmatic reimplementation of the same scan
 cargo deny check                      # license + ban list
 cargo tree --duplicates               # review duplicate deps before merge
 
@@ -137,8 +182,10 @@ cargo test --features e2e-cast -- --ignored --test-threads=1
 ```
 
 CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
-`fmt --check` → `clippy -D warnings` → `test` → `build` → `forbid-unsafe-check.sh`
-→ `cargo run -p xtask` → `cargo deny check`.
+`fmt --check` → `clippy -D warnings` (default and `e2e-cast` features) →
+`test` → `test --doc` → `e2e-cast` target compiles (`--no-run`) → `build` →
+`build --release` → `forbid-unsafe-check.sh` → `cargo run -p xtask` →
+`cargo deny check`, with the committed `Cargo.lock` uploaded as an artifact.
 
 ---
 
@@ -196,21 +243,24 @@ tests/
   mime_tests.rs
   lan_ip_tests.rs
   request_id_tests.rs
-  event_channel_tests.rs
+  connection_tests.rs
+  runtime_tests.rs
+  tls_e2e.rs            # self-signed cert via rcgen (dev-dep)
   screen_pipeline_tests.rs
   gui_state_tests.rs
+  support/
+    fake_encoder.rs    # compiled by `[[bin]] fake-encoder` (ISS-012)
   integration/
     http_e2e.rs          # in-process server + reqwest client
     cast_e2e.rs          # #[ignore] real-device tests behind feature flag
     screen_e2e.rs        # dummy rawvideo producer -> ffmpeg -> HTTP
 
 xtask/
+  Cargo.toml
   forbid_unsafe.rs       # binary that scans src/ for `unsafe` tokens
 
 scripts/
   forbid-unsafe-check.sh
-  dep-audit.sh
-  ci.sh
 
 rust-toolchain.toml
 deny.toml
@@ -225,38 +275,38 @@ Each phase is independently mergeable. Do not start Phase N+1 until Phase N's
 acceptance criteria pass.
 
 ### Phase 0 — Scaffolding
-- [ ] Add `rust-toolchain.toml`, populate `Cargo.toml` (§3.2), add `deny.toml`.
-- [ ] Replace `src/main.rs` with `#![forbid(unsafe_code)]` + tracing init + version banner.
-- [ ] Create `src/lib.rs` with `#![forbid(unsafe_code)]` and module declarations.
-- [ ] Add `scripts/forbid-unsafe-check.sh` (grep -rn `unsafe` and fail on any hit).
-- [ ] Add `xtask` binary to programmatically enforce the unsafe scan.
-- [ ] Create empty module files with `//!` doc comments referencing their owning spec.
-- [ ] **Gate:** `cargo build` clean, `forbid-unsafe-check.sh` passes, `cargo deny check` passes.
+- [x] Add `rust-toolchain.toml`, populate `Cargo.toml` (§3.2), add `deny.toml`.
+- [x] Replace `src/main.rs` with `#![forbid(unsafe_code)]` + tracing init + version banner.
+- [x] Create `src/lib.rs` with `#![forbid(unsafe_code)]` and module declarations.
+- [x] Add `scripts/forbid-unsafe-check.sh` (grep -rn `unsafe` and fail on any hit).
+- [x] Add `xtask` binary to programmatically enforce the unsafe scan.
+- [x] Create empty module files with `//!` doc comments referencing their owning spec.
+- [x] **Gate:** `cargo build` clean, `forbid-unsafe-check.sh` passes, `cargo deny check` passes.
 
 ### Phase 1 — Foundation types (`state.rs`, `util/`)
-- [ ] `state.rs`: `CastDevice { id, name, addr }`, `SourceTab`, `AppCommand`, `BackendEvent` per `02-gui.md` §4.1.
-- [ ] `util/shutdown.rs`: `Shutdown` wrap of `tokio::sync::watch::<bool>` with `subscribe()`, `is_shutting_down()`, `trigger()`.
-- [ ] `util/retry.rs`: exponential backoff iterator (1s, 2s, 4s, ..., cap 30s, max 5).
-- [ ] `util/backpressure.rs`: `BoundedDropOldest<T>` over `mpsc::channel` with `try_send` + drain-then-send.
-- [ ] **Tests:** shutdown propagation; backpressure drops oldest; backoff sequence.
-- [ ] **Gate:** `cargo test util` green.
+- [x] `state.rs`: `CastDevice { id, name, addr }`, `SourceTab`, `AppCommand`, `BackendEvent` per `02-gui.md` §4.1.
+- [x] `util/shutdown.rs`: `Shutdown` wrap of `tokio::sync::watch::<bool>` with `subscribe()`, `is_shutting_down()`, `trigger()`.
+- [x] `util/retry.rs`: exponential backoff iterator (1s, 2s, 4s, ..., cap 30s, max 5).
+- [x] `util/backpressure.rs`: `BoundedDropOldest<T>` over `mpsc::channel` with `try_send` + drain-then-send.
+- [x] **Tests:** shutdown propagation; backpressure drops oldest; backoff sequence.
+- [x] **Gate:** `cargo test util` green.
 
 ### Phase 2 — mDNS discovery (`cast/mdns.rs`) ← `03-cast-engine.md` §2
-- [ ] UDP bind `0.0.0.0:0`, join `224.0.0.251`.
-- [ ] Build PTR query for `_googlecast._tcp.local`, ID=0, no recursion flag.
-- [ ] 10-second requery loop with shutdown token.
-- [ ] DNS parser:
+- [x] UDP bind `0.0.0.0:0`, join `224.0.0.251`.
+- [x] Build PTR query for `_googlecast._tcp.local`, ID=0, no recursion flag.
+- [x] 10-second requery loop with shutdown token.
+- [x] DNS parser:
   - 12-byte header parse (QDCOUNT/ANCOUNT/NSCOUNT/ARCOUNT).
   - Question, answer, authority, additional sections.
   - Label decoding + compression pointers (max depth 4, cycle guard).
   - Skip unsupported record types.
   - Never panic on malformed packets; log + skip.
-- [ ] Record correlation: PTR instance name → SRV (port), A (IPv4), TXT (`fn=`).
-- [ ] De-dup by `(IP, port)`; expire after 3 missed cycles.
-- [ ] Push snapshots via `BackendEvent::ReceiversUpdated`.
-- [ ] Surface fatal setup errors via `ConnectionError`.
-- [ ] **Tests:** golden PTR/SRV/TXT/A packets; compression pointer chains; malformed packets; instance-name correlation; friendly-name fallback.
-- [ ] **Gate:** `cargo test --test dns_parser_tests` green.
+- [x] Record correlation: PTR instance name → SRV (port), A (IPv4), TXT (`fn=`).
+- [x] De-dup by `(IP, port)`; expire after 3 missed cycles.
+- [x] Push snapshots via `BackendEvent::ReceiversUpdated`.
+- [x] Surface fatal setup errors via `ConnectionError`.
+- [x] **Tests:** golden PTR/SRV/TXT/A packets; compression pointer chains; malformed packets; instance-name correlation; friendly-name fallback.
+- [x] **Gate:** `cargo test --test dns_parser_tests` green.
 
 ### Phase 3 — TLS transport (`cast/tls.rs`) ← `03-cast-engine.md` §3
 - [x] `rustls::ClientConfig` with `ring` provider, no ALPN, no SNI.
@@ -319,7 +369,7 @@ acceptance criteria pass.
 - [x] **Tests:** monotonic IDs; correlation hit/miss; 5s timeout fires; JSON builders produce exact bytes (snapshot tests); parsers tolerate extra fields.
 - [x] **Gate:** `cargo test --test request_id_tests` green.
 
-### Phase 6 — Connection lifecycle (`cast/connection.rs`) ← `03-cast-engine.md` §7
+### Phase 6 — Connection lifecycle (`cast/connection/`) ← `03-cast-engine.md` §7
 - [x] State machine: `Disconnected → Connecting → Connected → Launching → Ready → Streaming → Teardown`.
 - [x] Heartbeat task: PING every 5s; PONG watchdog 10s → teardown + reconnect.
 - [x] Reconnect policy: exponential backoff per `util/retry.rs`, max 5 attempts; surface `ConnectionError` to GUI when exhausted.
@@ -410,7 +460,7 @@ acceptance criteria pass.
 ### Phase 12 — Production hardening
 - [x] `tracing-subscriber` with `env-filter` (`CAST_APP_LOG=info` default; falls back to `RUST_LOG`, then `info`).
 - [x] Audit every `unwrap`/`expect`/`panic` in non-init code; convert to `?` + typed error.
-  - Remaining `expect`/`unreachable!` are documented init-only (`runtime.rs` runtime build) or provably-reachable-never match arms (`connection.rs` run-loop dispatch filters `Select`/`Shutdown` before `handle_command`; `capture.rs` join-handle taken once from a locally-created handle).
+  - Remaining `expect`/`unreachable!` are documented init-only (`runtime.rs` runtime build) or provably-reachable-never match arms (`state_machine.rs` run-loop dispatch filters `Select`/`Shutdown` before `handle_command`; `capture.rs` join-handle taken once from a locally-created handle).
 - [x] Backpressure tuning: capture channel cap 2, encoder channel cap 8.
 - [x] Log file at platform log dir (Linux `$XDG_STATE_HOME`/`~/.local/state`, macOS `~/Library/Logs`, Windows `%LOCALAPPDATA%`; `std::env::temp_dir()` fallback).
 - [x] Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
@@ -448,7 +498,7 @@ acceptance criteria pass.
 | `cast/tls.rs` | `03-cast-engine.md` §3 |
 | `cast/proto.rs`, `cast/framing.rs` | `03-cast-engine.md` §4–5 |
 | `cast/request_id.rs`, `cast/namespaces.rs` | `03-cast-engine.md` §6 |
-| `cast/connection.rs` | `03-cast-engine.md` §7 |
+| `cast/connection/` (facade + transport/reader/writer/state_machine/teardown) | `03-cast-engine.md` §7 |
 | `media/*` | `04-media-proxy.md` |
 | `screen/*` | `05-screen-capture.md` |
 | `runtime.rs`, `util/shutdown.rs` | `06-concurrency.md` |
@@ -481,18 +531,18 @@ Any of the following is an automatic PR block:
 
 A merge to `main` is production-ready when **all** of the following are true:
 
-- [ ] `#![forbid(unsafe_code)]` compiles on every supported target.
-- [ ] `cargo tree` shows zero banned crates (`cargo deny check` green).
-- [ ] Every acceptance-criteria checkbox in `specs/02-07-*.md` is checked, with the verifying test artifact referenced in the PR.
-- [ ] All seven spec files reviewed against final code; no silent deviations.
-- [ ] No `unwrap()`/`expect()` in hot paths; init-only usages documented.
-- [ ] No `await` or blocking I/O on the GUI thread (verified by code review + runtime check).
-- [ ] Heartbeat watchdog, reconnect backoff, and shutdown ordering covered by tests.
+- [x] `#![forbid(unsafe_code)]` compiles on every supported target.
+- [x] `cargo tree` shows zero banned crates (`cargo deny check` green).
+- [x] Every acceptance-criteria checkbox in `specs/02-07-*.md` is checked, with the verifying test artifact referenced in the PR.
+- [x] All seven spec files reviewed against final code; no silent deviations.
+- [x] No `unwrap()`/`expect()` in hot paths; init-only usages documented.
+- [x] No `await` or blocking I/O on the GUI thread (verified by code review + runtime check).
+- [x] Heartbeat watchdog, reconnect backoff, and shutdown ordering covered by tests.
 - [ ] HTTP Range correctness verified with `curl` and a real Chromecast on each OS.
 - [ ] fMP4 `-movflags` working set validated against a real receiver; result recorded in `screen/ffmpeg.rs` doc comment.
 - [ ] CI green on ubuntu-latest, windows-latest, macos-14.
-- [ ] `Cargo.lock` committed and reflects pinned versions from §3.2.
-- [ ] `ffmpeg` PATH discovery error UX is clear and actionable on each platform.
+- [x] `Cargo.lock` committed and reflects pinned versions from §3.2.
+- [x] `ffmpeg` PATH discovery error UX is clear and actionable on each platform.
 - [ ] Manual verification script (§11) executed successfully on at least one developer machine per OS.
 
 ---
@@ -503,8 +553,10 @@ A merge to `main` is production-ready when **all** of the following are true:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
+cargo test --doc
 cargo build --release
 ./scripts/forbid-unsafe-check.sh
+cargo run -p xtask
 cargo deny check
 ```
 
@@ -532,7 +584,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 - **Heartbeat:** PONG must reset the watchdog, not just be received. If you only set "received any message" you'll miss silent heartbeat failures.
 - **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416).
 - **URL proxy:** do **not** forward the Chromecast's `User-Agent` or `Host` headers upstream — they will break remote CDNs.
-- **Screen capture:** `xcap` returns BGRA on current versions; the spec example uses `-pix_fmt rgba`. Convert before piping, or switch ffmpeg to `-pix_fmt bgra` — pick one and pin it.
+- **Screen capture:** the pinned `xcap` 0.9.6 was verified at implementation time to return **RGBA on Linux X11, macOS, and Windows** — no conversion runs in the capture loop (`XCAP_FRAMES_ARE_RGBA = true`). Do not trust that forever: re-verify against the pinned version when upgrading `xcap`, and keep the unit-tested `bgra_to_rgba` fallback (and `-pix_fmt rgba` in the ffmpeg args) as the safety net.
 - **`xcap::Monitor` is `!Send` on Windows:** it wraps an `HMONITOR` (`*mut c_void`), so a `FrameSource` holding it cannot cross into a spawned thread. Construct the source *inside* the capture thread and move only the monitor *name* (`String`) across; `FrameSource` must not be `Send`-bounded. A second Windows-only trap: a `connect()` to a closed loopback port can report success at the socket layer with the refusal arriving later — tests must accept `ConnectTimeout` alongside `TlsError::Connect`.
 - **fMP4:** if the receiver stalls at "Buffering" forever, add `default_base_moof` to `-movflags` and re-test. Record the working flag set in code.
 - **Shutdown ordering:** drop the HTTP listener **first** so no new `/stream` connections arrive while the Cast connection is tearing down; otherwise the Chromecast may retry the URL mid-teardown.

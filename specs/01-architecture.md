@@ -132,7 +132,7 @@ Two overview gaps are now specified elsewhere in this set: the HTTP API schema i
 ## 8. Platform support
 
 - Linux (X11): supported.
-- Linux (Wayland): screen capture is not reliably available under `xcap` on Wayland sessions; the Display source SHALL be disabled with an explanatory error on Wayland, exactly as when `ffmpeg` is missing. All other functionality is unaffected.
+- Linux (Wayland): screen capture is not reliably available under `xcap` on Wayland sessions; on a Wayland session (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set) display enumeration fails with an explanatory error and the Display source is disabled — the monitor list stays empty and the capture thread refuses to start. All other functionality is unaffected.
 - Windows 10/11: supported.
 - macOS 13+: supported.
 - Anything else (e.g. BSD): unsupported.

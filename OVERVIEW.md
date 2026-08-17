@@ -27,21 +27,23 @@ The UI is divided into a centralized dashboard with three primary panels:
 
 ### State Management
 
-Because `egui` is an immediate-mode GUI, we avoid blocking the UI thread by using crossbeam channels (`mpsc`) or Tokio's unbounded channels. The GUI struct simply holds the current state and a sender queue:
+Because `egui` is an immediate-mode GUI, we avoid blocking the UI thread by using Tokio's unbounded channels. The GUI struct simply holds the current state and a sender queue:
 
 ```rust
-#![forbid(unsafe_code)]
-
 struct CastDashboard {
     available_receivers: Vec<CastDevice>,
     selected_receiver: Option<CastDevice>,
     source_tab: SourceTab,
     displays: Vec<String>,
-    
+
     // Command channel to the async runtime
     command_tx: tokio::sync::mpsc::UnboundedSender<AppCommand>,
-}
+    // Backend event channel, drained with `try_recv` each frame
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<BackendEvent>,
 
+    // ... plus mirrored backend state (discovery/connection/playback
+    // status, volume throttle, error banner, settings) — see `src/app.rs`
+}
 ```
 
 ---
@@ -60,7 +62,7 @@ Instead of importing a heavyweight mDNS crate, we implement a lightweight DNS pa
 
 ### 3.2 Transport Layer & Security
 
-Chromecast requires TLS without strict certificate validation (as devices use self-signed certs). We use `rustls` (a pure-Rust, safe TLS implementation). We configure a `ClientConfig` with a custom safe certificate verifier that accepts all certificates, wrap our `TcpStream` into a `rustls::Stream`, and establish the connection on port 8009.
+Chromecast requires TLS without strict certificate validation (as devices use self-signed certs). We use `rustls` (a pure-Rust, safe TLS implementation). We configure a `ClientConfig` with a custom safe certificate verifier that accepts all certificates, wrap our `TcpStream` into a `rustls::StreamOwned` (the `CastTlsStream` alias in `cast/tls.rs`), and establish the connection on port 8009 with a 5-second handshake timeout. Shutdown sends `close_notify` before closing the socket.
 
 ### 3.3 Hand-Rolled Protocol Buffers & CastV2 Framing
 
@@ -70,20 +72,23 @@ To avoid adding `prost` and a `build.rs` step for a single message type, we hand
 2. **Serialization:** Using standard Protobuf wire formatting, we write a pure Rust encoder. For example, writing a string field (like `namespace`) is just `[tag_byte, length_byte(s)]` followed by the UTF-8 bytes.
 
 ```rust
-// Minimal hand-rolled protobuf payload generator for CastMessage
+// Minimal hand-rolled protobuf payload generator for CastMessage.
+// The 4-byte BE length prefix is added by the framing layer
+// (`cast/framing.rs`), not by this encoder (`cast/proto.rs`).
 fn encode_cast_message(source: &str, dest: &str, namespace: &str, payload: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     // 1: protocol_version (0 = CASTV2_1_0)
-    buf.extend_from_slice(&[0x08, 0x00]); 
-    // 2: source_id, 3: destination_id, 4: namespace ... (logic to encode strings)
+    buf.extend_from_slice(&[0x08, 0x00]);
     // 5: payload_type (0 = STRING)
-    // 6: payload_utf8
-    
-    let mut frame = (buf.len() as u32).to_be_bytes().to_vec();
-    frame.append(&mut buf);
-    frame
+    buf.extend_from_slice(&[0x28, 0x00]);
+    // 2: source_id, 3: destination_id, 4: namespace, 6: payload_utf8
+    //    (length-delimited: [tag, length] + UTF-8 bytes)
+    write_length_delimited(&mut buf, 2, source.as_bytes());
+    write_length_delimited(&mut buf, 3, dest.as_bytes());
+    write_length_delimited(&mut buf, 4, namespace.as_bytes());
+    write_length_delimited(&mut buf, 6, payload.as_bytes());
+    buf
 }
-
 ```
 
 ### 3.4 Namespaces and Heartbeats
@@ -126,13 +131,14 @@ let mut ffmpeg = Command::new("ffmpeg")
         "-s", "1920x1080", "-r", "30",
         "-i", "-", // Read from stdin
         "-c:v", "libx264", "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-g", "30", // 1 s keyframe interval (recorded working set)
         "-f", "mp4", "-movflags", "frag_keyframe+empty_moov",
         "pipe:1" // Output to stdout
     ])
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .spawn()?;
-
 ```
 
 

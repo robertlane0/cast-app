@@ -71,7 +71,7 @@ Local-file responses SHALL include:
 
 When a Web URL source is active:
 
-1. The Rust application accepts the remote URL and issues a `GET` via `reqwest` at source-switch time (not per incoming request).
+1. The Rust application accepts the remote URL, validates it (absolute `http(s)` URL without userinfo) and issues a `GET` via `reqwest` per incoming `/stream` request (a per-request fetch honors each client's `Range` header; invalid URLs get a `400` at request time).
 2. The remote response body is streamed into the `/stream` connection.
 3. The Chromecast receives the local proxy URL instead of the original remote origin.
 

@@ -40,11 +40,11 @@ The capture implementation SHALL:
 - repeatedly capture raw byte frames at a fixed 30 fps;
 - run capture polling on a dedicated `std::thread::spawn` thread because OS capture APIs can block.
 
-On Linux Wayland sessions, `xcap` capture is not reliably available; the Display source SHALL be disabled with an explanatory error per the platform policy in `01-architecture.md` §8.
+On Linux Wayland sessions (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set), `xcap` capture is not reliably available: monitor enumeration fails with an explanatory error, the Display source is disabled (empty monitor list), and the capture thread refuses to start (per the platform policy in `01-architecture.md` §8).
 
 ### 3.1 Pixel format
 
-`xcap` returns frames in BGRA byte order on current versions. The capture thread SHALL convert each frame to RGBA before writing it to the pipeline, matching the documented `-pix_fmt rgba` input. The exact byte order SHALL be verified against the pinned crate version at implementation time.
+The pinned `xcap` version was verified at implementation time (2026-08, against the version locked in `Cargo.lock`) to return frames in **RGBA** byte order on Linux X11, macOS and Windows — so no runtime conversion runs in the capture loop and the raw frames are written straight into the `-pix_fmt rgba` ffmpeg input. The exact byte order SHALL be re-verified against the pinned crate version when `xcap` is upgraded; the conversion fallback (`bgra_to_rgba`, `XCAP_FRAMES_ARE_RGBA`) SHALL be kept implemented and unit-tested as the safety net.
 
 ### 3.2 Resolution
 

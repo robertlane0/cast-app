@@ -33,7 +33,7 @@ canonical implementation guide.
 | OS | Status | Screen capture |
 |---|---|---|
 | Linux (X11) | supported | yes |
-| Linux (Wayland) | supported | no — Display source disabled with an explanatory error |
+| Linux (Wayland) | supported | no — disabled on Wayland (error in the log; monitor list stays empty) |
 | Windows 10/11 | supported | yes |
 | macOS 13+ | supported | yes |
 
@@ -141,6 +141,10 @@ src/
   cast/          mDNS, TLS, framing, hand-rolled protobuf, connection state machine
   media/         HTTP proxy: local files, URL proxy, Range, MIME, LAN IP
   screen/        xcap capture thread, ffmpeg subprocess, capture→ffmpeg→HTTP bridge
+tests/
+  unit + integration test suites (incl. feature-gated `cast_e2e`)
+xtask/           unsafe-scan binary (CI gate)
+scripts/         forbid-unsafe-check.sh
 specs/           01–07 implementation specifications
 ```
 

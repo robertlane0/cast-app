@@ -141,7 +141,7 @@ Minimum scenarios:
 4. Maintain heartbeat.
 5. Launch Default Media Receiver.
 6. Correlate the `LAUNCH` response by `requestId` and extract `transportId`.
-7. Send a media-namespace `LOAD` with the local proxy URL to `transport-<sessionId>`.
+7. Send a media-namespace `LOAD` with the local proxy URL to `transport-<transportId>`.
 8. Serve a local file.
 9. Seek using an HTTP Range request.
 10. Proxy a remote media URL.

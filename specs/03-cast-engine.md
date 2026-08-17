@@ -174,7 +174,7 @@ Source and destination IDs:
 |---|---|---|---|
 | Transport (client to device) | `source-0` | `transport-0` | connection, heartbeat |
 | Receiver (client to device) | `source-0` | `receiver-0` | receiver |
-| Media (client to device) | `source-0` | `transport-<sessionId>` | media |
+| Media (client to device) | `source-0` | `transport-<transportId>` | media |
 
 The media destination ID is derived from the `transportId` in the `RECEIVER_STATUS` response to `LAUNCH`.
 
@@ -253,7 +253,7 @@ Namespace:
 
 `urn:x-cast:com.google.cast.media`
 
-The engine SHALL send media commands to `transport-<sessionId>` with the per-connection `requestId` sequence.
+The engine SHALL send media commands to `transport-<transportId>` with the per-connection `requestId` sequence.
 
 `LOAD` starts playback of a media URL:
 
@@ -304,7 +304,7 @@ Discover
 
 - Network loss or a missed heartbeat SHALL close the TLS connection and attempt reconnection with exponential backoff: 1 s, 2 s, 4 s, ..., capped at 30 s, with a maximum of 5 attempts.
 - After the cap is exhausted, the engine SHALL surface an error to the GUI and wait for the user to re-select the receiver.
-- Reconnection SHALL restart the full lifecycle from `Connect TCP`, including a fresh `LAUNCH`.
+- Reconnection SHALL restart the transport lifecycle from `Connect TCP`: TLS handshake, `CONNECT`, and heartbeat/watchdog timers resume, and the pending-request map is reset. No fresh `LAUNCH` is issued — a reconnected session returns to the `Connected` phase and the caller re-issues its command (the queued `LOAD` is not replayed after a mid-playback blip).
 
 ## 8. Engine acceptance criteria
 

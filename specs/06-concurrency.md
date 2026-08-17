@@ -92,7 +92,7 @@ backend task(s)
 
 ## 5. Supervision and cancellation
 
-- A supervisor task SHALL own the runtime graph. A fatal failure of the mDNS task (e.g. multicast socket setup) or the Cast connection task emits `BackendEvent::ConnectionError` and SHALL halt dependent tasks; non-fatal failures (e.g. a socket read error) SHALL be logged and the task SHALL continue or restart per its policy.
+- A supervisor task SHALL own the runtime graph. A fatal failure of the mDNS task (e.g. multicast socket setup) emits `BackendEvent::ConnectionError`, halts the failed task and leaves the other tasks running; the user can retry discovery via the GUI (`AppCommand::Rescan`), which rebinds the socket and restarts the task. A fatal failure of the Cast connection task surfaces the same event (reconnect-exhaustion) and halts the session until the user re-selects the receiver; the mDNS and media tasks keep running. Non-fatal failures (e.g. a socket read error) SHALL be logged and the task SHALL continue or restart per its policy.
 - All tasks, the capture thread and the `ffmpeg` bridge SHALL observe a shared shutdown signal (`tokio::sync::watch` channel).
 - Dropping the GUI (application exit) SHALL trigger shutdown, releasing the TLS socket, the HTTP listener and the `ffmpeg` child process through their `Drop` implementations.
 
