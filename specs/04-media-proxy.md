@@ -97,6 +97,8 @@ When a Web URL source is active:
 
 The outbound request is initiated by the local desktop user from the UI, not by an incoming HTTP request, so the proxy introduces no URL-driven SSRF surface. The Chromecast only ever receives the local `/stream` URL.
 
+Any valid absolute `http(s)` URL is accepted, **including URLs that resolve to private LAN addresses** (RFC 1918, link-local, loopback, or non-routable space). This is a feature, not a bug: media servers commonly run on the LAN (e.g. a NAS or a media server on another machine) and are a legitimate casting target. No IP-range filtering, private-address blocking, or DNS rebinding defense is performed or required, because the request is user-initiated and the user is the authority on what their own desktop may fetch.
+
 ## 5. Screen stream integration
 
 The proxy SHALL also support the encoded output produced by the screen-capture pipeline:
