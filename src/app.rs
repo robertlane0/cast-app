@@ -392,12 +392,19 @@ impl CastDashboard {
     // -----------------------------------------------------------------------
 
     /// A URL is valid when it parses as absolute `http://` or `https://`
-    /// with a host.
+    /// with a host, or as an anonymous `smb://` share URL (host + share +
+    /// file path, no userinfo; `02-gui.md` §3.2, `04-media-proxy.md` §4.4).
     pub fn validate_url(input: &str) -> bool {
         let Ok(parsed) = url::Url::parse(input.trim()) else {
             return false;
         };
-        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some()
+        match parsed.scheme() {
+            "http" | "https" => parsed.host_str().is_some(),
+            // Share URLs must pass the backend's full validation: host +
+            // share + file path, and never credentials.
+            "smb" => crate::media::smb_source::SmbUrl::parse(input.trim()).is_ok(),
+            _ => false,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -661,12 +668,12 @@ impl CastDashboard {
     }
 
     fn web_url_tab(&mut self, ui: &mut egui::Ui) {
-        ui.label("Remote media URL (absolute http:// or https:// with a host)");
+        ui.label("Remote media URL (http:// or https://, or smb:// for anonymous network shares)");
         let valid = Self::validate_url(&self.url_input);
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.url_input)
-                    .hint_text("https://example.com/media/video.mp4")
+                    .hint_text("https://example.com/media/video.mp4  or  smb://nas/share/video.mp4")
                     .desired_width(480.0),
             );
             if ui.add_enabled(valid, egui::Button::new("Apply")).clicked() {
@@ -677,7 +684,7 @@ impl CastDashboard {
         if !valid {
             ui.colored_label(
                 egui::Color32::from_rgb(255, 176, 0),
-                "Enter an absolute http:// or https:// URL with a host.",
+                "Enter an absolute http(s):// URL with a host, or an anonymous smb://host/share/file URL (no credentials).",
             );
         }
     }

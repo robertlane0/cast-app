@@ -17,6 +17,7 @@ use tokio::time::timeout;
 
 use crate::media::flush::FlushTracker;
 use crate::media::local_file;
+use crate::media::smb_source::{self, Smb2Connector};
 use crate::media::source::ActiveSource;
 use crate::media::url_proxy::UrlProxy;
 use crate::util::shutdown::Shutdown;
@@ -427,8 +428,18 @@ async fn handle_connection(
             }
         }
         Some(ActiveSource::Url(url)) => {
+            // `smb://` URLs stream from a network share (anonymous only);
+            // everything else goes through the HTTP(S) proxy
+            // (`04-media-proxy.md` §4.4).
+            let future = async move {
+                if smb_source::is_smb_url(&url) {
+                    smb_source::serve(&mut writer, &Smb2Connector, &url, range, head_only).await
+                } else {
+                    proxy.serve(&mut writer, &url, range, head_only).await
+                }
+            };
             tokio::select! {
-                result = proxy.serve(&mut writer, &url, range, head_only) => result,
+                result = future => result,
                 _ = generation_rx.changed() => {
                     tracing::info!(%peer, "proxy stream aborted by source switch");
                     Ok(())

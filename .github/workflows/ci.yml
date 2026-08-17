@@ -56,16 +56,22 @@ jobs:
       - name: clippy (e2e-cast feature)
         run: cargo clippy --all-targets --features e2e-cast -- -D warnings
 
+      - name: clippy (e2e-smb feature)
+        run: cargo clippy --all-targets --features e2e-smb -- -D warnings
+
       - name: test
         run: cargo test --all
 
       - name: test (doc)
         run: cargo test --doc
 
-      # Real-device tests never run in CI (they need a Chromecast), but the
-      # feature-gated target must keep compiling.
+      # Real-device/real-share tests never run in CI (they need a Chromecast
+      # or an SMB server), but the feature-gated targets must keep compiling.
       - name: e2e-cast target compiles
         run: cargo test --features e2e-cast --test cast_e2e --no-run
+
+      - name: e2e-smb target compiles
+        run: cargo test --features e2e-smb --test smb_e2e --no-run
 
       - name: build
         run: cargo build

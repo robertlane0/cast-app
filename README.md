@@ -1,10 +1,10 @@
 # cast-app
 
 A zero-unsafe Rust desktop application that discovers Google Cast (Chromecast)
-receivers on the LAN, streams local files / remote URLs / captured displays to
-them, and controls playback — with a fully hand-rolled Cast V2 stack (mDNS,
-TLS, CastV2 framing, Protobuf) and an external `ffmpeg` subprocess for video
-encoding.
+receivers on the LAN, streams local files / remote URLs / anonymous network
+shares (SMB) / captured displays to them, and controls playback — with a fully
+hand-rolled Cast V2 stack (mDNS, TLS, CastV2 framing, Protobuf) and an external
+`ffmpeg` subprocess for video encoding.
 
 - **GUI:** `egui` / `eframe`
 - **Async:** Tokio (multi-threaded), `rustls` (ring provider)
@@ -23,7 +23,9 @@ canonical implementation guide.
 - Receiver `LAUNCH` (Default Media Receiver `CC1AD845`), heartbeat keep-alive,
   reconnect with exponential backoff
 - Media proxy: local-file serving with HTTP `Range` (200/206/416), remote-URL
-  proxying, LAN-IP advertisement, configurable port
+  proxying, anonymous SMB share serving (`smb://host/share/file`, guest logon
+  only — shares requiring authentication fail with `401`), LAN-IP
+  advertisement, configurable port
 - Screen capture (X11/macOS/Windows) piped to `ffmpeg` as raw RGBA, H.264
   fragmented MP4 streamed live (`video/mp4`)
 - Play / Pause / Stop / volume / mute controls
@@ -93,7 +95,9 @@ On a LAN with a Chromecast:
 1. Wait ~10 s for the receiver to appear in the left panel.
 2. Select it; the status dot turns green.
 3. **Local File** tab — pick a media file, then **Play**.
-4. **Web URL** tab — enter an absolute `http(s)://` media URL, then **Play**.
+4. **Web URL** tab — enter an absolute `http(s)://` media URL or an anonymous
+   `smb://host/share/dir/file.mp4` network-share URL (no credentials accepted),
+   then **Play**.
 5. **Display** tab — pick a monitor (requires `ffmpeg`), then **Play**.
 6. Quit — verify no orphan `ffmpeg` process remains.
 
@@ -139,7 +143,7 @@ src/
   runtime.rs     tokio runtime + supervisor
   util/          shutdown token, retry backoff, drop-oldest channels
   cast/          mDNS, TLS, framing, hand-rolled protobuf, connection state machine
-  media/         HTTP proxy: local files, URL proxy, Range, MIME, LAN IP
+  media/         HTTP proxy: local files, URL proxy, SMB shares, Range, MIME, LAN IP
   screen/        xcap capture thread, ffmpeg subprocess, capture→ffmpeg→HTTP bridge
 tests/
   unit + integration test suites (incl. feature-gated `cast_e2e`)

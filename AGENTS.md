@@ -22,8 +22,9 @@
 | Implementation status | Phases 0–12 complete; only the manual per-OS verification runs (Phase 12, §10, §11) remain, as they require physical Chromecasts |
 
 Target (achieved): a zero-unsafe Rust desktop app that discovers Chromecast
-receivers, streams local files / remote URLs / captured displays to them, with a
-fully hand-rolled Cast V2 stack and an external `ffmpeg` subprocess for video
+receivers, streams local files / remote URLs / anonymous network shares
+(SMB, `04-media-proxy.md` §4.4) / captured displays to them, with a fully
+hand-rolled Cast V2 stack and an external `ffmpeg` subprocess for video
 encoding.
 
 ---
@@ -76,6 +77,11 @@ license = "MIT OR Apache-2.0"
 # crate is empty without this feature. Run with:
 #   cargo test --features e2e-cast -- --ignored --test-threads=1
 e2e-cast = []
+# Real-network-share end-to-end tests (`tests/integration/smb_e2e.rs`): empty
+# without the feature. Run against a guest-accessible share with:
+#   SMB_E2E_SERVER=nas:445 SMB_E2E_SHARE=media SMB_E2E_PATH=dir/video.mp4 \
+#     cargo test --features e2e-smb --test smb_e2e -- --ignored --test-threads=1
+e2e-smb = []
 
 [dependencies]
 eframe = "0.36"            # pin latest stable at impl start
@@ -98,6 +104,14 @@ bytes     = "1"
 http      = "1"
 if-addrs = "0.15.0"
 url = "2"
+# Anonymous SMB network-share streaming (`04-media-proxy.md` §4.4): pure-Rust
+# SMB2 client (guest logon only). MIT OR Apache-2.0. Pulls thiserror 2.x —
+# a duplicate version vs. our thiserror 1.x is expected (`cargo tree
+# --duplicates` shows it); the two are type-incompatible, so never mix them
+# in one module.
+smb2 = "0.18"
+# `url` no longer re-exports `percent_encoding` (removed in url 2.5.8).
+percent-encoding = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
@@ -126,6 +140,11 @@ path = "tests/integration/screen_e2e.rs"
 [[test]]
 name = "cast_e2e"
 path = "tests/integration/cast_e2e.rs"
+
+# Feature-gated: empty unless `--features e2e-smb` (see `[features]`).
+[[test]]
+name = "smb_e2e"
+path = "tests/integration/smb_e2e.rs"
 
 [workspace]
 members = ["xtask"]
@@ -178,6 +197,10 @@ cargo tree --duplicates               # review duplicate deps before merge
 
 # Optional feature-gated end-to-end tests (require real Chromecast)
 cargo test --features e2e-cast -- --ignored --test-threads=1
+
+# Optional feature-gated end-to-end tests (require a guest-accessible SMB share)
+SMB_E2E_SERVER=nas:445 SMB_E2E_SHARE=media SMB_E2E_PATH=dir/video.mp4 \
+  cargo test --features e2e-smb --test smb_e2e -- --ignored --test-threads=1
 ```
 
 CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
@@ -226,6 +249,7 @@ src/
     lan_ip.rs            # LAN IP selection (subnet -> default route -> loopback)
     local_file.rs        # 200/206/416 + 64 KiB chunked streaming
     url_proxy.rs         # reqwest GET with Range forwarding + 502 policy
+    smb_source.rs        # smb:// URLs: SmbUrl parse (no userinfo), SmbConnector/SmbFile traits, Smb2Connector (guest), serve 200/206/416/400/401/403/404/502
     source.rs            # ActiveSource enum, switch-terminates-in-flight
   screen/
     mod.rs
@@ -248,6 +272,7 @@ tests/
   runtime_tests.rs
   tls_e2e.rs            # self-signed cert via rcgen (dev-dep)
   screen_pipeline_tests.rs
+  smb_tests.rs          # smb:// parse + serve semantics via SmbConnector/SmbFile fakes
   gui_state_tests.rs
   support/
     fake_encoder.rs    # compiled by `[[bin]] fake-encoder` (ISS-012)
@@ -255,6 +280,7 @@ tests/
     http_e2e.rs          # in-process server + reqwest client
     cast_e2e.rs          # #[ignore] real-device tests behind feature flag
     screen_e2e.rs        # dummy rawvideo producer -> ffmpeg -> HTTP
+    smb_e2e.rs           # #[ignore] real-share tests behind feature flag (SMB_E2E_* env)
 
 xtask/
   Cargo.toml
@@ -478,6 +504,17 @@ acceptance criteria pass.
 - [ ] Walk the manual verification script (§11 below) on each supported OS (requires physical Chromecasts + per-OS machines).
 - [x] Tick every acceptance-criteria box in `specs/07-requirements-and-tests.md` (also `specs/03-cast-engine.md` §8 and `specs/06-concurrency.md` §6).
 
+### Phase 13 — Anonymous SMB share streaming (`04-media-proxy.md` §4.4)
+- [x] `smb://host[:port]/share/dir/file` accepted by the Web URL source; percent-decoded share/path; userinfo, query, fragment, and empty path segments rejected at parse (`SmbUrl` structurally carries no credentials).
+- [x] `smb2 = "0.18"` pure-Rust client behind `SmbConnector<F>`/`SmbFile` traits; `Smb2Connector` uses empty username/password (guest), `auto_reconnect: false`, `dfs_enabled: false`; per-request anonymous session, handle closed when the response ends.
+- [x] `/stream` serves SMB sources with the local-file Range policy (200/206/416, `HEAD` without body); the client `Range` is translated into positioned `read_at(offset, len)` reads (1 MiB chunks), never a whole-file refetch.
+- [x] Error mapping: 400 invalid URL, 401 guest-logon rejected (permanent, no retry-with-credentials), 403 access denied, 404 missing, 502 transport; mid-stream read failure aborts the connection.
+- [x] `tests/smb_tests.rs` (24 tests) via fakes; `tests/integration/smb_e2e.rs` behind `--features e2e-smb` (`SMB_E2E_SERVER`/`SHARE`/`PATH`, optional `SMB_E2E_AUTH_SERVER` for the 401 path).
+- [x] **Gate:** `cargo test --test smb_tests` green; `cargo clippy --all-targets --features e2e-smb` clean; `smb_e2e` compiles `--no-run`.
+- [x] Docs: `specs/04-media-proxy.md` §4.4 (+ §6 criteria), `specs/02-gui.md` §3.2, `specs/07-requirements-and-tests.md` (FR-033/FR-034, test matrix), `AGENTS.md`, CI (`e2e-smb` clippy/`--no-run` on the matrix).
+
+> **Lessons recorded (Phase 13):** (1) **`url` 2.5.8 removed the `percent_encoding` re-export** — add `percent-encoding = "2"` directly. (2) **`smb2` pulls thiserror 2.x alongside our thiserror 1.x** (`cargo tree --duplicates` shows both); they are type-incompatible so never mix them in one module — `SmbError` stays a hand-rolled `thiserror 1` enum and wraps `smb2::Error` by value. (3) **`smb2::Error` is not `Clone`** (it holds `io::Error`), so `SmbError` cannot derive `Clone`; test fakes must not clone errors — the fake read-failure is a bool that builds a fresh error per read. (4) **Clippy's `question_mark` + inference:** `let result = match … { … Ok(()) }` then `result?;` is ambiguous under `-D warnings`; annotate `let result: io::Result<()> = match …`. (5) **`async fn` in trait impls is fine for RPITIT traits** — the lib desugars trait *declarations* to `impl Future + Send` (clippy `async_fn_in_trait`), but test *impls* may use plain `async fn` (clippy `manual_async_fn` demands it). (6) `split('\r\n')` yields a trailing empty element after the head terminator — response-head parsers in tests must filter empty lines or the last header panics.
+
 ---
 
 ## 7. Coding conventions for agents
@@ -594,6 +631,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 - **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416).
 - **Flush cadence:** never flush per chunk in streaming handlers — it defeats the `BufWriter` and burns a syscall per chunk. Use `FlushTracker` with per-handler byte/time thresholds (`url_proxy.rs` `FLUSH_BYTES`/`FLUSH_INTERVAL` = 32 KiB/25 ms; `server.rs` live-screen = 64 KiB/50 ms), flush the response head immediately, and always flush the tail before a close-delimited stream ends.
 - **URL proxy:** do **not** forward the Chromecast's `User-Agent` or `Host` headers upstream — they will break remote CDNs.
+- **SMB (`04-media-proxy.md` §4.4):** anonymous-only by construction — the parsed `SmbUrl` type has no credential fields, so no code path can ever present credentials. `smb2`'s `Error` is not `Clone`, so never derive `Clone` on wrappers around it and never clone errors in fakes. A guest-logon rejection is `ErrorKind::AuthRequired` and is permanent (401), not a signal to retry with credentials. `split('\r\n')` on a response head yields a trailing empty line — filter it or the last header parse panics.
 - **Screen capture:** the pinned `xcap` 0.9.6 was verified at implementation time to return **RGBA on Linux X11, macOS, and Windows** — no conversion runs in the capture loop (`XCAP_FRAMES_ARE_RGBA = true`). Do not trust that forever: re-verify against the pinned version when upgrading `xcap`, and keep the unit-tested `bgra_to_rgba` fallback (and `-pix_fmt rgba` in the ffmpeg args) as the safety net.
 - **`xcap::Monitor` is `!Send` on Windows:** it wraps an `HMONITOR` (`*mut c_void`), so a `FrameSource` holding it cannot cross into a spawned thread. Construct the source *inside* the capture thread and move only the monitor *name* (`String`) across; `FrameSource` must not be `Send`-bounded. A second Windows-only trap: a `connect()` to a closed loopback port can report success at the socket layer with the refusal arriving later — tests must accept `ConnectTimeout` alongside `TlsError::Connect`.
 - **fMP4:** if the receiver stalls at "Buffering" forever, add `default_base_moof` to `-movflags` and re-test. Record the working flag set in code.

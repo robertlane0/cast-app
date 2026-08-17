@@ -31,6 +31,8 @@
 | FR-025 | A missing `ffmpeg` executable disables the Display source with an error. | Process test/manual |
 | FR-026 | Invalid HTTP ranges return `416`; multi-range headers are ignored with `200`. | Range-response tests |
 | FR-027 | Configure the proxy port from the Settings UI. | GUI test/integration |
+| FR-033 | Serve anonymous `smb://host/share/path` network-share URLs through `/stream` with the §3.1 Range policy. | `smb_tests` (fakes) + feature-gated `smb_e2e` |
+| FR-034 | SMB is anonymous-only: URLs with userinfo are rejected; a server rejecting the guest logon fails with `401`; no credentials exist in the app. | `smb_tests` parse/serve tests |
 
 ## 2. Safety and architecture requirements
 
@@ -95,6 +97,18 @@ Test:
 - missing range header;
 - `HEAD` returns headers without a body.
 
+### SMB serving (FR-033, FR-034)
+
+Test against `SmbConnector`/`SmbFile` fakes:
+
+- `smb://host/share/path` URL parsing: percent-decoding, non-default ports, host requirement;
+- rejection of userinfo URLs (`smb://user:pass@...`), query/fragment, missing share or file path, and empty path segments;
+- `200` full-body, `206` single/open-ended/suffix ranges, `416` unsatisfiable, `HEAD` without body;
+- the `Range` header is translated into positioned reads (`read_at(offset, len)`);
+- guest-logon rejection → `401`, missing resource → `404`, access denied → `403`, transport failure → `502`, invalid URL → `400`;
+- a read failure mid-stream aborts the connection;
+- feature-gated `smb_e2e` integration tests exercise the real `smb2` client against a guest-accessible share (`SMB_E2E_SERVER`/`SHARE`/`PATH`, optional `SMB_E2E_AUTH_SERVER` for the 401 path).
+
 ### LAN IP selection
 
 Test:
@@ -125,7 +139,7 @@ Test state transitions for:
 - source-tab selection;
 - display selection;
 - local-file selection;
-- URL entry;
+- URL entry (including `smb://` validity and userinfo rejection);
 - transport command dispatch;
 - status-indicator updates from backend events;
 - proxy-port setting validation and dispatch.
@@ -153,6 +167,7 @@ Minimum scenarios:
 15. Dispatch play/pause/stop/volume commands.
 16. Verify backpressure drops frames instead of blocking capture.
 17. Verify a slow consumer receives only whole fMP4 segments (no partial boxes on the wire).
+18. Serve a guest-accessible SMB share through `/stream` (feature-gated `smb_e2e`; requires an SMB server on the LAN).
 
 ## 5. Dependency audit
 
@@ -175,7 +190,7 @@ The implementation is considered aligned with this specification set when all st
 TBDs required for production are resolved and reflected in these specifications. The mandatory set is:
 
 - Cast protocol: CastMessage field schema, inbound decoder, `requestId` correlation, source/destination IDs, media-namespace `LOAD` and transport controls, heartbeat/reconnect policy.
-- HTTP proxy: bind address and port, LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture.
+- HTTP proxy: bind address and port, LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture, anonymous SMB share serving (`04-media-proxy.md` §4.4).
 - Screen capture: capture crate, pixel-format conversion, resolution handling, `ffmpeg` discovery and lifecycle, backpressure, shutdown.
 - Concurrency: channel crate, event channel, data ownership, supervision and cancellation.
 - Platform: OS support matrix, toolchain, dependency pinning, `ffmpeg` install strategy, CI gate.

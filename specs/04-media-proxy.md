@@ -99,6 +99,45 @@ The outbound request is initiated by the local desktop user from the UI, not by 
 
 Any valid absolute `http(s)` URL is accepted, **including URLs that resolve to private LAN addresses** (RFC 1918, link-local, loopback, or non-routable space). This is a feature, not a bug: media servers commonly run on the LAN (e.g. a NAS or a media server on another machine) and are a legitimate casting target. No IP-range filtering, private-address blocking, or DNS rebinding defense is performed or required, because the request is user-initiated and the user is the authority on what their own desktop may fetch.
 
+## 4.4 Network-share (SMB) streaming
+
+The Web URL source SHALL also accept anonymous network-share URLs of the form:
+
+```text
+smb://<host>[:<port>]/<share>/<dir>/.../<file>
+```
+
+(e.g. `smb://nas.lan/media/movies/clip.mp4`). The share is served to the
+Chromecast through the same `/stream` endpoint with the same Range semantics
+as local files, so seeking and buffering behave identically.
+
+### 4.4.1 URL parsing and validation
+
+- The URL SHALL parse as absolute `smb://` with a host, a share name, and a non-empty file path (one or more path segments after the share, none empty).
+- Percent-encoding SHALL be decoded (`%20` → space) in the share and file path before use.
+- The default port SHALL be `445`; a non-default port (`smb://host:1445/...`) SHALL be honored.
+- Query strings, fragments, and IPv6-scope forms SHALL be rejected as invalid.
+- **Credentials are never accepted:** a URL containing userinfo (`smb://user:pass@host/...`) SHALL be rejected at parse time. The parsed type structurally cannot carry credentials.
+
+### 4.4.2 Authentication policy (anonymous only)
+
+- The client SHALL open shares with empty username and password (guest logon). No authentication prompt, password storage, or retry-with-credentials logic exists anywhere in the app.
+- A server that rejects the guest logon SHALL fail with `401 Unauthorized` and a plain-text body stating the reason; the failure is permanent for that source (no fallback, no negotiation).
+- A share/file that does not exist SHALL fail with `404 Not Found`; a share or file that exists but denies access to the guest SHALL fail with `403 Forbidden`.
+- Transport-level failures (server unreachable, protocol error) SHALL fail with `502 Bad Gateway`.
+
+### 4.4.3 Serving semantics
+
+- The same Range policy as §3.1 applies: no `Range` → `200`, valid single range → `206` with `Content-Range`, unsatisfiable → `416`.
+- `Content-Type`, `Accept-Ranges`, `Content-Length`, and `Cache-Control` SHALL match §3.2; `HEAD` returns headers without a body.
+- The body SHALL be streamed in fixed chunks (1 MiB) using positioned reads; the Chromecast's `Range` header is translated into read offsets, never re-fetched as a fresh whole-file transfer.
+- Each `/stream` request SHALL open its own anonymous session and close the handle when the response ends (success, abort, or disconnect); no session is cached across requests.
+- A read failure mid-stream SHALL abort the connection (the client sees an incomplete response, the same signal local-file serving gives).
+
+### 4.4.4 Implementation note
+
+The SMB client is the pure-Rust `smb2` crate (no FFI, no `libsmbclient`), reached only through the small `SmbConnector`/`SmbFile` traits so the serving logic is tested against fakes; the real client is covered by the feature-gated `smb_e2e` integration tests (run manually against a guest-accessible share; `SMB_E2E_*` environment variables).
+
 ## 5. Screen stream integration
 
 The proxy SHALL also support the encoded output produced by the screen-capture pipeline:
@@ -127,3 +166,9 @@ The proxy SHALL also support the encoded output produced by the screen-capture p
 - [x] Screen encoder output is exposed as continuous `video/mp4`.
 - [x] Proxy I/O does not block the GUI thread.
 - [x] Body streaming flushes on byte/time thresholds (never per chunk); the response head and the close-delimited tail are flushed.
+- [x] `smb://host/share/path` URLs are accepted by the URL source and served through `/stream` (§4.4).
+- [x] SMB URLs with userinfo (`smb://user:pass@...`) are rejected at parse time; no credentials exist in the app.
+- [x] Guest access is the only SMB authentication mode; a server rejecting the guest logon fails with `401`.
+- [x] SMB responses implement the §3.1 Range policy and §3.2 headers (200/206/416, HEAD without body).
+- [x] The Chromecast's `Range` header is translated into positioned SMB reads; the body is chunked-streamed, never buffered whole.
+- [x] SMB failures map to 400 (invalid URL), 401 (auth required), 403 (denied), 404 (missing), 502 (transport).

@@ -393,6 +393,11 @@ fn valid_urls_parse_as_absolute_http_with_host() {
         "https://example.com:8443/path/media.mkv",
         "HTTP://EXAMPLE.COM:8080/a",
         "  https://example.com/a  ",
+        // Anonymous network shares (`04-media-proxy.md` §4.4): host + share +
+        // file path, no credentials.
+        "smb://nas/share/video.mp4",
+        "smb://192.168.1.50/media/dir/movie.mkv",
+        "smb://nas:1445/share/My%20Movie.mp4",
     ] {
         assert!(
             CastDashboard::validate_url(valid),
@@ -414,6 +419,13 @@ fn invalid_urls_are_rejected() {
         "http://",
         "https://",
         "not a url",
+        // SMB URLs without a share or file path are not streamable.
+        "smb://host",
+        "smb://host/share",
+        "smb://host/share/",
+        // Credentials are never accepted on share URLs (anonymous-only).
+        "smb://user@host/share/video.mp4",
+        "smb://user:pass@host/share/video.mp4",
     ] {
         assert!(
             !CastDashboard::validate_url(invalid),

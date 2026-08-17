@@ -11,6 +11,11 @@ license = "MIT OR Apache-2.0"
 # crate is empty without this feature. Run with:
 #   cargo test --features e2e-cast -- --ignored --test-threads=1
 e2e-cast = []
+# Real-network-share end-to-end tests (`tests/integration/smb_e2e.rs`): the
+# test crate is empty without this feature. Run with:
+#   SMB_E2E_SERVER=host:445 SMB_E2E_SHARE=guest-share SMB_E2E_PATH=dir/video.mp4 \
+#     cargo test --features e2e-smb --test smb_e2e -- --ignored --test-threads=1
+e2e-smb = []
 
 [dependencies]
 eframe = "0.36"            # pin latest stable at impl start
@@ -33,6 +38,11 @@ bytes     = "1"
 http      = "1"
 if-addrs = "0.15.0"
 url = "2"
+percent-encoding = "2"
+# Pure-Rust SMB2/3 client for anonymous network-share streaming (`04-media-proxy.md` §4.4).
+# Empty username/password = guest; the crate exposes ErrorKind::AuthRequired so
+# authentication-required shares fail explicitly instead of prompting.
+smb2 = "0.18"
 
 [dev-dependencies]
 pretty_assertions = "1"
@@ -61,6 +71,11 @@ path = "tests/integration/screen_e2e.rs"
 [[test]]
 name = "cast_e2e"
 path = "tests/integration/cast_e2e.rs"
+
+# Feature-gated: empty unless `--features e2e-smb` (see `[features]`).
+[[test]]
+name = "smb_e2e"
+path = "tests/integration/smb_e2e.rs"
 
 [workspace]
 members = ["xtask"]

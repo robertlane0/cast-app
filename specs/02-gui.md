@@ -58,7 +58,8 @@ The source selector SHALL be tabbed.
 #### Web URL tab
 
 - Provide a text input for a remote media URL.
-- A URL is valid when it parses as absolute `http://` or `https://` with a host. The Apply action SHALL be disabled while the input is invalid.
+- A URL is valid when it parses as absolute `http://` or `https://` with a host, or as an anonymous `smb://host/share/path` network-share URL (`04-media-proxy.md` §4.4). The Apply action SHALL be disabled while the input is invalid.
+- SMB URLs SHALL be rejected when they carry userinfo (`smb://user:pass@...`) or lack a share and file path; the input hint SHALL advertise anonymous shares (e.g. `smb://nas/share/video.mp4`).
 - Submitting a valid URL SHALL dispatch `AppCommand::SelectUrl`.
 
 ### 3.3 Transport Controls — bottom bar
