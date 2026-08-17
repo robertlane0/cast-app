@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
+use crate::media::flush::FlushTracker;
 use crate::media::server::{reason_phrase, write_response_head};
 
 /// Connect + first-byte deadline (`04-media-proxy.md` §4.2). There is no
@@ -18,6 +19,16 @@ pub const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum redirects followed by the proxy (`04-media-proxy.md` §4.2).
 pub const MAX_REDIRECTS: usize = 5;
+
+/// Accumulated bytes before the body loop flushes the writer. Remote chunks
+/// are typically ~8 KiB (one hyper read each); flushing every chunk would
+/// defeat the `BufWriter` and emit a syscall per chunk. 32 KiB batches four
+/// chunks into one write.
+pub const FLUSH_BYTES: usize = 32 * 1024;
+
+/// Longest the body loop holds buffered bytes before flushing, bounding the
+/// added startup/latency when chunks trickle in below `FLUSH_BYTES`.
+pub const FLUSH_INTERVAL: Duration = Duration::from_millis(25);
 
 /// A shared `reqwest` client for all `/stream` URL-source connections.
 #[derive(Debug, Clone)]
@@ -140,15 +151,38 @@ impl UrlProxy {
             return writer.flush().await;
         }
 
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| io::Error::new(io::ErrorKind::ConnectionAborted, error))?
-        {
-            writer.write_all(&chunk).await?;
-            // Remote chunks are small; flush each so the receiver sees
-            // steady progress instead of 8 KiB bursts.
-            writer.flush().await?;
+        // The head must reach the wire before the body loop so the receiver
+        // can start parsing immediately (spec §4); the body then batches on
+        // byte/time thresholds instead of flushing per chunk.
+        writer.flush().await?;
+
+        let mut flush = FlushTracker::new(FLUSH_BYTES, FLUSH_INTERVAL);
+        loop {
+            tokio::select! {
+                chunk = response.chunk() => {
+                    let chunk = chunk.map_err(|error| {
+                        io::Error::new(io::ErrorKind::ConnectionAborted, error)
+                    })?;
+                    match chunk {
+                        Some(chunk) => {
+                            writer.write_all(&chunk).await?;
+                            if flush.should_flush(chunk.len()) {
+                                writer.flush().await?;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep_until(flush.next_deadline().into()) => {
+                    // Time threshold elapsed with no new chunk: push whatever
+                    // is buffered so the receiver never waits past the
+                    // interval on a stalled origin.
+                    if flush.has_pending() {
+                        writer.flush().await?;
+                    }
+                    flush.reset();
+                }
+            }
         }
         writer.flush().await
     }

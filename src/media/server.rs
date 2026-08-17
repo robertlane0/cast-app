@@ -15,6 +15,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
+use crate::media::flush::FlushTracker;
 use crate::media::local_file;
 use crate::media::source::ActiveSource;
 use crate::media::url_proxy::UrlProxy;
@@ -26,6 +27,16 @@ pub const DEFAULT_PORT: u16 = 8080;
 /// Deadline for reading the request head (request line + headers) so a slow
 /// or dead client cannot pin a task forever.
 const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Accumulated bytes before the live screen loop flushes the writer.
+/// Encoder chunks are small; flushing each would fragment the stream into
+/// tiny TCP segments and burn a syscall per chunk. 64 KiB amortizes those
+/// costs without delaying fragment delivery noticeably.
+const LIVE_FLUSH_BYTES: usize = 64 * 1024;
+
+/// Longest the live screen loop holds buffered bytes before flushing,
+/// bounding the added mirroring latency when the encoder emits slowly.
+const LIVE_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Maximum length of the request line.
 const MAX_REQUEST_LINE: usize = 8 * 1024;
@@ -503,6 +514,11 @@ where
     // The head must reach the wire before the stream loop: encoder chunks
     // are small and may never fill the writer's buffer.
     writer.flush().await?;
+
+    // Batch small encoder chunks on byte/time thresholds instead of flushing
+    // each one: at most LIVE_FLUSH_INTERVAL of added latency, and the head
+    // already went out immediately.
+    let mut flush = FlushTracker::new(LIVE_FLUSH_BYTES, LIVE_FLUSH_INTERVAL);
     loop {
         tokio::select! {
             _ = generation_rx.changed() => {
@@ -510,16 +526,27 @@ where
                 return Ok((ScreenEnd::Aborted, receiver));
             }
             _ = shutdown_rx.changed() => return Ok((ScreenEnd::Aborted, receiver)),
+            _ = tokio::time::sleep_until(flush.next_deadline().into()) => {
+                    // Time threshold elapsed with no new chunk: push whatever
+                    // is buffered so the receiver never waits past the
+                    // interval.
+                    if flush.has_pending() {
+                        writer.flush().await?;
+                    }
+                    flush.reset();
+                }
             chunk = receiver.recv() => match chunk {
                 Some(chunk) => {
                     writer.write_all(&chunk).await?;
-                    // Live stream: every chunk must reach the wire promptly;
-                    // encoder chunks are small and would otherwise sit in the
-                    // writer's buffer.
-                    writer.flush().await?;
+                    if flush.should_flush(chunk.len()) {
+                        writer.flush().await?;
+                    }
                 }
                 None => {
                     tracing::info!("screen encoder output ended");
+                    // Flush the tail: the response is close-delimited, so
+                    // buffered bytes would be lost when the writer drops.
+                    writer.flush().await?;
                     return Ok((ScreenEnd::ChannelClosed, receiver));
                 }
             },

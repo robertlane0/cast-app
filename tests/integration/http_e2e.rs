@@ -482,6 +482,40 @@ async fn url_proxy_head_returns_headers_without_body() {
     assert_eq!(response.bytes().await.expect("body").len(), 0);
 }
 
+#[tokio::test]
+async fn url_proxy_flushes_idle_chunks_before_the_origin_closes() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("origin bind");
+    let origin_port = listener.local_addr().expect("origin local addr").port();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("origin accept");
+        socket
+            .write_all(b"HTTP/1.1 200 Origin\r\nConnection: close\r\nContent-Length: 4\r\n\r\nabcd")
+            .await
+            .expect("origin write");
+        // Keep the connection open past the proxy's flush interval: the
+        // buffered body must reach the client via the time threshold, not
+        // by the stream ending.
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let ts = start_server().await;
+    set_source(
+        &ts.server,
+        ActiveSource::Url(format!("http://127.0.0.1:{origin_port}/slow")),
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client.get(stream_url(ts.port)).send().await.expect("GET");
+    let body = timeout(Duration::from_secs(2), response.bytes())
+        .await
+        .expect("idle buffered bytes must be flushed within the interval")
+        .expect("body");
+    assert_eq!(&body[..], b"abcd");
+}
+
 // ---------------------------------------------------------------------------
 // Source switching terminates in-flight connections
 // ---------------------------------------------------------------------------
@@ -565,6 +599,71 @@ async fn live_screen_stream_is_continuous_video_mp4() {
     drop(tx);
     assert!(
         response.chunk().await.expect("end").is_none(),
+        "stream must end when the encoder channel closes"
+    );
+}
+
+#[tokio::test]
+async fn live_screen_tail_is_flushed_when_the_channel_closes() {
+    let ts = start_server().await;
+    ts.server
+        .set_source(ActiveSource::Screen("test-monitor".to_string()));
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
+    attach_screen_stream(&ts.server, rx).await;
+
+    let client = reqwest::Client::new();
+    let mut response = client.get(stream_url(ts.port)).send().await.expect("GET");
+
+    // Small chunk, then immediate close: the buffered tail must still reach
+    // the client when the close-delimited response ends.
+    tx.send(vec![7, 7, 7]).await.expect("chunk");
+    drop(tx);
+    assert_eq!(
+        response.chunk().await.expect("read").expect("tail chunk"),
+        &[7, 7, 7][..],
+        "bytes buffered at channel close must be flushed"
+    );
+    assert!(
+        response.chunk().await.expect("read").is_none(),
+        "stream must end after the flushed tail"
+    );
+}
+
+#[tokio::test]
+async fn live_screen_idle_chunks_are_flushed_on_the_time_threshold() {
+    let ts = start_server().await;
+    ts.server
+        .set_source(ActiveSource::Screen("test-monitor".to_string()));
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
+    attach_screen_stream(&ts.server, rx).await;
+
+    let client = reqwest::Client::new();
+    let mut response = client.get(stream_url(ts.port)).send().await.expect("GET");
+
+    // A chunk below the byte threshold with the channel still open must
+    // still reach the client when the flush interval elapses — the time
+    // threshold races the wait for the next chunk instead of only firing
+    // on writes.
+    tx.send(vec![9, 9, 9]).await.expect("chunk");
+    let flushed = timeout(Duration::from_secs(2), response.chunk())
+        .await
+        .expect("idle buffered bytes must be flushed within the interval")
+        .expect("read")
+        .expect("chunk");
+    assert_eq!(&flushed[..], &[9, 9, 9]);
+
+    // The connection must still be live afterwards.
+    tx.send(vec![1, 2]).await.expect("follow-up chunk");
+    let second = timeout(Duration::from_secs(2), response.chunk())
+        .await
+        .expect("follow-up must arrive")
+        .expect("read")
+        .expect("follow-up chunk");
+    assert_eq!(&second[..], &[1, 2]);
+
+    drop(tx);
+    assert!(
+        response.chunk().await.expect("read").is_none(),
         "stream must end when the encoder channel closes"
     );
 }

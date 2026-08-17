@@ -35,6 +35,10 @@ Exactly one source is active at a time. `/stream` serves the active source (loca
 - The server SHALL stream media bytes without requiring the entire media object to be loaded into memory.
 - The server SHALL parse the HTTP request line and headers, supporting only `GET` and `HEAD`; other methods return `405`.
 - The server SHALL stream responses incrementally; the GUI thread is never involved.
+- Streaming handlers SHALL flush the response head immediately, then batch body
+  writes on accumulated-byte / elapsed-time thresholds (`FLUSH_BYTES` /
+  `FLUSH_INTERVAL` per handler) instead of flushing after every chunk; the
+  final buffered tail SHALL be flushed when the stream ends.
 
 ## 3. Local-file serving
 
@@ -120,3 +124,4 @@ The proxy SHALL also support the encoded output produced by the screen-capture p
 - [x] Switching source terminates the in-flight stream.
 - [x] Screen encoder output is exposed as continuous `video/mp4`.
 - [x] Proxy I/O does not block the GUI thread.
+- [x] Body streaming flushes on byte/time thresholds (never per chunk); the response head and the close-delimited tail are flushed.

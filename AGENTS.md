@@ -220,6 +220,7 @@ src/
     teardown.rs        # STOP → STOP_APP → close_notify ordering
   media/
     mod.rs
+    flush.rs             # FlushTracker: bounded byte/time flush cadence for streaming handlers
     server.rs            # tokio TcpListener HTTP/1.1 server
     range.rs             # Range parser + Content-Range builder
     mime.rs              # extension -> MIME map
@@ -595,6 +596,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 - **Protobuf:** the length prefix is part of the **framing**, not the protobuf payload. Encode payload → measure → prepend 4-byte BE length.
 - **Heartbeat:** PONG must reset the watchdog, not just be received. If you only set "received any message" you'll miss silent heartbeat failures.
 - **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416).
+- **Flush cadence:** never flush per chunk in streaming handlers — it defeats the `BufWriter` and burns a syscall per chunk. Use `FlushTracker` with per-handler byte/time thresholds (`url_proxy.rs` `FLUSH_BYTES`/`FLUSH_INTERVAL` = 32 KiB/25 ms; `server.rs` live-screen = 64 KiB/50 ms), flush the response head immediately, and always flush the tail before a close-delimited stream ends.
 - **URL proxy:** do **not** forward the Chromecast's `User-Agent` or `Host` headers upstream — they will break remote CDNs.
 - **Screen capture:** the pinned `xcap` 0.9.6 was verified at implementation time to return **RGBA on Linux X11, macOS, and Windows** — no conversion runs in the capture loop (`XCAP_FRAMES_ARE_RGBA = true`). Do not trust that forever: re-verify against the pinned version when upgrading `xcap`, and keep the unit-tested `bgra_to_rgba` fallback (and `-pix_fmt rgba` in the ffmpeg args) as the safety net.
 - **`xcap::Monitor` is `!Send` on Windows:** it wraps an `HMONITOR` (`*mut c_void`), so a `FrameSource` holding it cannot cross into a spawned thread. Construct the source *inside* the capture thread and move only the monitor *name* (`String`) across; `FrameSource` must not be `Send`-bounded. A second Windows-only trap: a `connect()` to a closed loopback port can report success at the socket layer with the refusal arriving later — tests must accept `ConnectTimeout` alongside `TlsError::Connect`.

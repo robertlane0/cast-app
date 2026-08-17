@@ -3,6 +3,7 @@
 //! remote-URL proxying, LAN IP selection, and source switching.
 //! Owned by `04-media-proxy.md`.
 
+pub mod flush;
 pub mod lan_ip;
 pub mod local_file;
 pub mod mime;
