@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! In-process media-server end-to-end tests (`04-media-proxy.md` §6):
 //! 200/206/416/404/405, `HEAD`, MIME detection, URL proxying with `Range`
 //! forwarding, `502` on remote failure, non-2xx pass-through, live screen

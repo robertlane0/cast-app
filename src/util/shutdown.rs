@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cooperative shutdown token wrapping `tokio::sync::watch::<bool>`.
 //! Owned by `06-concurrency.md` §5.
 

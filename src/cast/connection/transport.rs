@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transport abstraction (`03-cast-engine.md` §3, §7): the `Transport`
 //! trait, the shared mutex wrapper, the `Connector` trait and the real TLS
 //! connector with read/write timeouts.

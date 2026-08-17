@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! MIME-type detection tests (`04-media-proxy.md` §3.2).
 //! Gate: `cargo test --test mime_tests`.
 

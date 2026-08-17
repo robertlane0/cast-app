@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GUI state tests (`02-gui.md` §3–§4): command dispatch for every
 //! `AppCommand` variant, `try_recv` event application, URL validation,
 //! volume-throttle timing, and status-indicator updates from synthetic

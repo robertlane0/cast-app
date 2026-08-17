@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Request correlation and namespace message tests (`03-cast-engine.md` §6).
 //! Monotonic IDs, correlation hit/miss, the 5-second timeout, byte-exact
 //! JSON snapshots, and tolerant response parsers.

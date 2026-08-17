@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-module protobuf tests against the public API
 //! (`03-cast-engine.md` §5). Golden vectors, round trips, and malformed-input
 //! rejection. Gate: `cargo test --test protobuf_tests`.

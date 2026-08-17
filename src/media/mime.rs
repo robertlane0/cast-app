@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! File-extension to MIME-type mapping for media serving
 //! (`04-media-proxy.md` §3.2).
 

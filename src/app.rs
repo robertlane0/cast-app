@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `CastDashboard` eframe application: UI rendering, command dispatch, and
 //! per-frame `try_recv` draining of backend events (`02-gui.md` §3–§4).
 //!

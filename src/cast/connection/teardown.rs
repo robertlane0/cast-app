@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graceful session teardown (`03-cast-engine.md` §7): media `STOP` →
 //! receiver `STOP_APP` → `close_notify` → close socket, all best effort.
 

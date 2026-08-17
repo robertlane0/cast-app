@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Write path of the connection (`03-cast-engine.md` §7): framed payload
 //! writes on `spawn_blocking` workers (blocking socket), with a polling
 //! `try_lock` that cannot be starved by the reader thread.

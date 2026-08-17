@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Screen capture pipeline: monitor capture on a dedicated `std::thread`,
 //! BGRA→RGBA conversion, `ffmpeg` subprocess encoding, and channel bridges.
 //! Owned by `05-screen-capture.md`.

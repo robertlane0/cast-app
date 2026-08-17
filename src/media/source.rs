@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The active media source model (`04-media-proxy.md` §1.2): exactly one
 //! source serves `/stream`, and switching sources terminates any in-flight
 //! connection via a per-generation cancellation token.

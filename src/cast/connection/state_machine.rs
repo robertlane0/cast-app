@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Connection state machine (`03-cast-engine.md` §7): the lifecycle phases,
 //! commands, events, inbound routing, command dispatch, heartbeat watchdog,
 //! reconnect policy, connect flow and the [`run`] loop. Blocking TLS I/O

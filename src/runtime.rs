@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tokio runtime construction and the backend supervisor (`06-concurrency.md`
 //! §5): spawns Task A (mDNS), Task B (Cast), Task C (HTTP) and the screen
 //! capture thread, routes GUI commands, aggregates every `BackendEvent` into

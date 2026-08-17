@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HTTP Range parsing tests (`04-media-proxy.md` §3.1).
 //! Full/single/suffix/multi/unsatisfiable classification and
 //! `Content-Range` formatting.

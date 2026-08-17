@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! End-to-end TLS transport tests against a local rustls server with a
 //! self-signed certificate (`03-cast-engine.md` §3). The connected stream is
 //! exercised with plain text (no CastV2 framing yet — that is Phase 4).

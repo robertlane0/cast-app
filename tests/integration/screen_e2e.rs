@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![forbid(unsafe_code)]
 
 //! Screen pipeline end-to-end test (`05-screen-capture.md` §6): a dummy

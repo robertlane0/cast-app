@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! xcap monitor enumeration and the 30 fps capture loop on a dedicated
 //! `std::thread` (`05-screen-capture.md` §3).
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![forbid(unsafe_code)]
 
 //! Backend supervisor tests (`06-concurrency.md` §5): the whole task graph

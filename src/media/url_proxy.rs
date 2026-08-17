@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Remote-URL proxying for the `/stream` endpoint (`04-media-proxy.md` §4):
 //! `reqwest` GET with `Range` forwarding, ≤5 redirects, a 30 s first-byte
 //! timeout with no overall streaming limit, non-2xx pass-through, and `502`

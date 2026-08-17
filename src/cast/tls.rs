@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! rustls client configuration and a permissive certificate verifier for
 //! self-signed Chromecast certificates. Owned by `03-cast-engine.md` §3.
 

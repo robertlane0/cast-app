@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Local-file streaming with `200`/`206`/`416` semantics, 64 KiB chunked
 //! reads, and `HEAD` support (`04-media-proxy.md` §3).
 

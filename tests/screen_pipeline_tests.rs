@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![forbid(unsafe_code)]
 
 //! Screen-pipeline integration tests (`05-screen-capture.md` §4–§6) driven

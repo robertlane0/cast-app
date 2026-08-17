@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reader side of the connection (`03-cast-engine.md` §7): the dedicated
 //! `std::thread` that owns the blocking read side of the transport, plus the
 //! [`FrameAccumulator`] that reassembles transport bytes into complete

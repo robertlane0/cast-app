@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! LAN IP selection tests (`04-media-proxy.md` §1.1).
 //! Subnet-match precedence, default-route fallback, and loopback
 //! exclusion. Gate: `cargo test --test lan_ip_tests`.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! CastV2 framing tests against the public API (`03-cast-engine.md` §4).
 //! Gate: `cargo test --test framing_tests`.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pure-safe in-place BGRA→RGBA byte shuffle (`05-screen-capture.md` §3.1).
 //! `xcap` versions have historically returned BGRA on some platforms; the
 //! spec pins the pipeline to `-pix_fmt rgba`, so frames must arrive in RGBA

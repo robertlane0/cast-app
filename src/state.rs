@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared GUI/backend state types: `CastDevice`, `SourceTab`, `AppCommand`,
 //! `BackendEvent`. Owned by `02-gui.md` §4.1.
 

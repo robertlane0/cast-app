@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![forbid(unsafe_code)]
 
 //! Cross-platform fake encoder used by `tests/screen_pipeline_tests.rs` to

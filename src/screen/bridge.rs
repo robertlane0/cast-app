@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Capture→ffmpeg stdin and ffmpeg stdout→HTTP channel bridges with
 //! drop-oldest backpressure (`05-screen-capture.md` §5–§6).
 //!
