@@ -15,6 +15,12 @@
 //! - `sleep SECS` — sleep `SECS` without reading stdin, then exit 0
 //! - `stream` — emit 64 KiB chunks on stdout forever while draining stdin;
 //!   exiting on stdin EOF kills the emitter
+//! - `fmp4 LOG` — append `started <pid>` to `LOG`, then emit a structured
+//!   fMP4 stream (init: `ftyp`+`moov` whose payload carries the pid; then
+//!   `moof`+`mdat` fragments whose mdat payload repeats the pid bytes) on
+//!   stdout forever while draining stdin; exiting on stdin EOF kills the
+//!   emitter. The pid markers let tests distinguish encoder generations and
+//!   detect stale bytes after a restart.
 
 use std::env;
 use std::fs::OpenOptions;
@@ -42,6 +48,42 @@ fn emit_forever() {
         if stdout.write_all(&chunk).is_err() {
             std::process::exit(0);
         }
+    }
+}
+
+/// Size of one fake fragment's `mdat` payload.
+const FRAGMENT_MDAT: usize = 256 * 1024;
+
+/// Write one ISO-BMFF box (4-byte BE size + 4-byte type + payload).
+fn write_box(writer: &mut impl Write, kind: &[u8; 4], payload: &[u8]) -> io::Result<()> {
+    let size = 8u32 + payload.len() as u32;
+    writer.write_all(&size.to_be_bytes())?;
+    writer.write_all(kind)?;
+    writer.write_all(payload)
+}
+
+/// Emit the structured fMP4 stream; the init and every fragment carry the
+/// 4-byte `pattern` so tests can recognize the stream's generation.
+fn emit_fmp4(pattern: [u8; 4]) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_box(&mut stdout, b"ftyp", b"isom\x00\x00\x00\x00isom")?;
+    let mut moov = vec![0u8; 4096];
+    moov[..4].copy_from_slice(&pattern);
+    write_box(&mut stdout, b"moov", &moov)?;
+    let mut mdat = vec![0u8; FRAGMENT_MDAT];
+    for slot in mdat.chunks_exact_mut(4) {
+        slot.copy_from_slice(&pattern);
+    }
+    let moof = vec![0u8; 64];
+    loop {
+        write_box(&mut stdout, b"moof", &moof)?;
+        write_box(&mut stdout, b"mdat", &mdat)?;
+    }
+}
+
+fn append_started(log: &str) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log) {
+        let _ = writeln!(file, "started {}", std::process::id());
     }
 }
 
@@ -80,9 +122,19 @@ fn main() -> ExitCode {
             let _ = emitter;
             std::process::exit(0);
         }
+        "fmp4" => {
+            append_started(&args[1]);
+            let pid = std::process::id();
+            let emitter = std::thread::spawn(move || {
+                let _ = emit_fmp4(pid.to_le_bytes());
+            });
+            let _ = drain_stdin();
+            let _ = emitter;
+            std::process::exit(0);
+        }
         _ => {
             eprintln!(
-                "usage: fake-encoder <cat MARKER | restart LOG | exit CODE | sleep SECS | stream>"
+                "usage: fake-encoder <cat MARKER | restart LOG | exit CODE | sleep SECS | stream | fmp4 LOG>"
             );
             ExitCode::FAILURE
         }

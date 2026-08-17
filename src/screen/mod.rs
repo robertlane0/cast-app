@@ -8,3 +8,4 @@ pub mod bridge;
 pub mod capture;
 pub mod ffmpeg;
 pub mod ffmpeg_discover;
+pub mod segments;

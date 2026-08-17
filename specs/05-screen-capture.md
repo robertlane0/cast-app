@@ -119,7 +119,7 @@ The bridge SHALL continuously receive captured RGBA buffers and write them to th
 
 The HTTP server SHALL asynchronously read `ffmpeg` stdout and stream the encoded bytes as a continuous `video/mp4` response to the Chromecast.
 
-- Encoded bytes SHALL be forwarded through a bounded channel; when full, the oldest chunk is dropped (accepting a transient glitch under slow network conditions).
+- Encoded bytes SHALL be forwarded through bounded channels whose elements are **whole fMP4 segments** (`moof`+`mdat` fragments or the init segment), not raw byte chunks: a slow consumer causes whole-segment drops (`drop-newest` at the media-server channel; `drop-oldest` in the reader's segment queue, which never evicts the init segment), so every box reaching the wire is complete and the stream stays decodable. The encoder's stdout is parsed into segments by `Mp4Segmenter` (`screen/segments.rs`); at EOF a truncated fragment tail is discarded rather than emitted.
 - Closing the HTTP connection ends the session as described in §4.2.
 
 ## 7. Safety boundary
@@ -146,5 +146,6 @@ Screen mirroring SHALL be video-only. Audio capture and muxing are a documented 
 - [x] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error (`StreamError` + pipeline halt; tested with an `exit 3` fake).
 - [x] Shutdown sends EOF, then kills the process after a timeout (5 s grace, tested with fake encoders; real ffmpeg confirmed in `screen_e2e`).
 - [x] Backpressure drops the oldest frame rather than blocking capture (drop-oldest cap-2 frame queue; tested with a full-pipe fake encoder).
-- [x] Encoded bytes can be streamed by the local HTTP server (cap-8 output queue → forwarder → media-server live channel; `screen_e2e` consumes the stream end-to-end).
+- [x] Encoded-byte backpressure is segment-aware: overflow drops whole fMP4 segments (never partial boxes, never the init segment), and an encoder restart emits a fresh init that precedes all new fragments (tested by `slow_consumer_receives_only_whole_fmp4_segments` and `encoder_restart_emits_a_fresh_valid_init_segment` with the `fmp4` fake-encoder mode).
+- [x] Encoded bytes can be streamed by the local HTTP server (cap-8 segment output queue → forwarder → media-server live channel; `screen_e2e` consumes the stream end-to-end).
 - [x] No unsafe Rust or unsafe C-FFI encoder integration is introduced.

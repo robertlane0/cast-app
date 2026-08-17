@@ -113,6 +113,7 @@ Test:
 
 - BGRA-to-RGBA conversion;
 - drop-oldest backpressure on a full channel;
+- segment-aware encoded-byte backpressure: slow consumer receives only whole fMP4 segments, encoder restart emits a fresh init before any new fragments;
 - `ffmpeg` discovery on `PATH`;
 - graceful shutdown sends EOF, then kills after the timeout.
 
@@ -151,6 +152,7 @@ Minimum scenarios:
 14. Stream the resulting fMP4 to the receiver.
 15. Dispatch play/pause/stop/volume commands.
 16. Verify backpressure drops frames instead of blocking capture.
+17. Verify a slow consumer receives only whole fMP4 segments (no partial boxes on the wire).
 
 ## 5. Dependency audit
 

@@ -8,13 +8,23 @@
 //! - **controller** owns the `Ffmpeg` child: writes frames to its stdin,
 //!   restarts it on resolution change, runs the EOF → wait → kill teardown,
 //!   and reports unexpected exits;
-//! - **stdout reader** (one per encoder generation) reads encoded chunks
-//!   into the cap-8 output queue;
-//! - **forwarder** moves output-queue chunks into the media server's live
+//! - **stdout reader** (one per encoder generation) segments the encoded
+//!   output at ISO-BMFF fragment boundaries (`screen::segments`) and pushes
+//!   whole segments into the cap-8 output queue;
+//! - **forwarder** moves output-queue segments into the media server's live
 //!   stream channel, and tears the session down when the consumer closes.
+//!
+//! Backpressure is media-aware: the drop unit is one complete encoded
+//! segment (a `moof`+`mdat` fragment, or a whole read of non-box-structured
+//! output), never an arbitrary byte slice. A slow consumer therefore
+//! receives a stream that skips whole fragments — a transient glitch — and
+//! never truncated MP4 boxes, which would break decoding until the stream
+//! is restarted. The init segment (`ftyp`+`moov`) is protected from
+//! eviction everywhere, and an encoder restart clears the old generation's
+//! buffered bytes so a fresh, valid init always leads the new stream.
 
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -23,6 +33,7 @@ use tokio::sync::mpsc;
 
 use crate::media::server::MediaServer;
 use crate::screen::ffmpeg::{Ffmpeg, GRACE_PERIOD};
+use crate::screen::segments::{EncodedSegment, Mp4Segmenter};
 use crate::state::BackendEvent;
 use crate::util::backpressure::BoundedDropOldest;
 use crate::util::shutdown::Shutdown;
@@ -30,10 +41,14 @@ use crate::util::shutdown::Shutdown;
 /// Capture → encoder frame queue capacity (AGENTS.md §7; drop-oldest).
 pub const FRAME_QUEUE_CAPACITY: usize = 2;
 
-/// Encoder → HTTP output queue capacity (AGENTS.md §7; drop-oldest).
+/// Encoder → HTTP output queue capacity, measured in encoded segments
+/// (AGENTS.md §7; drop-oldest evicts whole media fragments, never byte
+/// slices). With the configured 1 s keyframe interval a segment is ~1 s of
+/// video.
 pub const OUTPUT_QUEUE_CAPACITY: usize = 8;
 
-/// Media-server live-stream channel capacity (forwarder transport).
+/// Media-server live-stream channel capacity (forwarder transport), in
+/// encoded segments.
 const SERVER_CHANNEL_CAPACITY: usize = 8;
 
 /// Idle poll interval of the controller and forwarder threads.
@@ -46,12 +61,13 @@ const STDOUT_CHUNK: usize = 64 * 1024;
 pub struct ScreenBridge {
     monitor_name: String,
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
-    output: Arc<BoundedDropOldest<Vec<u8>>>,
+    output: Arc<BoundedDropOldest<EncodedSegment>>,
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     resolution_request: Arc<Mutex<Option<(u32, u32)>>>,
     reader_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     last_error: Arc<Mutex<Option<String>>>,
+    dropped_segments: Arc<AtomicUsize>,
     threads: Vec<Option<JoinHandle<()>>>,
 }
 
@@ -122,6 +138,7 @@ impl ScreenBridge {
         let last_error = Arc::new(Mutex::new(None));
         let resolution_request = Arc::new(Mutex::new(None));
         let reader_handles = Arc::new(Mutex::new(Vec::new()));
+        let dropped_segments = Arc::new(AtomicUsize::new(0));
 
         // Capture thread (dedicated std::thread; spec §3) — skipped when an
         // external frame feeder was requested.
@@ -181,10 +198,16 @@ impl ScreenBridge {
         server.attach_screen_stream(server_rx);
         let forwarder_output = Arc::clone(&output);
         let forwarder_stop = Arc::clone(&stop);
+        let forwarder_dropped = Arc::clone(&dropped_segments);
         let forwarder = std::thread::Builder::new()
             .name("screen-forwarder".to_string())
             .spawn(move || {
-                forwarder_loop(forwarder_output, server_tx, forwarder_stop);
+                forwarder_loop(
+                    forwarder_output,
+                    server_tx,
+                    forwarder_stop,
+                    forwarder_dropped,
+                );
             })
             .map_err(|error| error.to_string())?;
 
@@ -197,6 +220,7 @@ impl ScreenBridge {
             resolution_request,
             reader_handles,
             last_error,
+            dropped_segments,
             threads: vec![capture_thread, Some(controller), Some(forwarder)],
         })
     }
@@ -247,9 +271,17 @@ impl ScreenBridge {
         self.frames.len()
     }
 
-    /// Buffered encoded chunks awaiting the HTTP consumer (diagnostics/tests).
+    /// Buffered encoded segments awaiting the HTTP consumer
+    /// (diagnostics/tests).
     pub fn output_len(&self) -> usize {
         self.output.len()
+    }
+
+    /// How many encoded segments were dropped because a consumer fell
+    /// behind (diagnostics/tests). Drops are whole segments, never byte
+    /// slices.
+    pub fn dropped_segments(&self) -> usize {
+        self.dropped_segments.load(Ordering::Relaxed)
     }
 
     /// Stop the pipeline and join every thread (blocking; used at shutdown
@@ -303,7 +335,7 @@ impl FrameFeeder {
 /// Shared state for one pipeline run, passed to the controller thread.
 struct ControllerContext {
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
-    output: Arc<BoundedDropOldest<Vec<u8>>>,
+    output: Arc<BoundedDropOldest<EncodedSegment>>,
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     resolution_request: Arc<Mutex<Option<(u32, u32)>>>,
@@ -363,6 +395,16 @@ fn controller_loop(
                 );
                 drop(stdin.take());
                 let _ = encoder.wait_graceful(GRACE_PERIOD);
+                // The old generation's stdout reader has hit EOF now that
+                // its encoder is dead; join it so no stale bytes can land
+                // after the output queue is cleared, then drop the old
+                // generation entirely: the new encoder's init segment must
+                // be the only init the consumer sees after a restart.
+                let old_readers = lock(&reader_handles).drain(..).collect::<Vec<_>>();
+                for reader in old_readers {
+                    let _ = reader.join();
+                }
+                output.clear();
                 match spawn_encoder(size, &custom_encoder) {
                     Ok(mut new_encoder) => {
                         if let Some(new_stdout) = new_encoder.take_stdout() {
@@ -456,11 +498,12 @@ fn spawn_encoder(
     }
 }
 
-/// Read encoded bytes from the encoder's stdout into the cap-8 output queue
-/// until EOF. One thread per encoder generation.
+/// Read encoded bytes from the encoder's stdout, cut them at decoder-safe
+/// ISO-BMFF boundaries, and push the resulting segments into the cap-8
+/// output queue until EOF. One thread per encoder generation.
 fn spawn_stdout_reader(
     stdout: std::process::ChildStdout,
-    output: Arc<BoundedDropOldest<Vec<u8>>>,
+    output: Arc<BoundedDropOldest<EncodedSegment>>,
     reader_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 ) {
     let reader = std::thread::Builder::new()
@@ -468,16 +511,24 @@ fn spawn_stdout_reader(
         .spawn(move || {
             let mut stdout = stdout;
             let mut chunk = vec![0u8; STDOUT_CHUNK];
+            let mut segmenter = Mp4Segmenter::new();
             loop {
                 match stdout.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(read) => output.push(chunk[..read].to_vec()),
+                    Ok(read) => {
+                        for segment in segmenter.feed(&chunk[..read]) {
+                            push_segment(&output, segment);
+                        }
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => {
                         tracing::warn!(%error, "encoder stdout read failed");
                         break;
                     }
                 }
+            }
+            for segment in segmenter.finish() {
+                push_segment(&output, segment);
             }
             tracing::debug!("encoder stdout reader finished");
         });
@@ -492,29 +543,72 @@ fn spawn_stdout_reader(
     }
 }
 
-/// Move output-queue chunks into the media server's live-stream channel.
+/// Push one encoded segment into the output queue. When the queue is full,
+/// the oldest *fragment* is evicted — the init segment is protected, since
+/// every following fragment depends on it. If the queue holds only
+/// protected segments (pathological), the newest segment is dropped instead:
+/// a whole-segment skip, never corrupt bytes.
+fn push_segment(output: &BoundedDropOldest<EncodedSegment>, segment: EncodedSegment) {
+    let evictable = |buffered: &EncodedSegment| matches!(buffered, EncodedSegment::Fragment(_));
+    if let Some(rejected) = output.push_or(segment, evictable) {
+        tracing::warn!(
+            bytes = rejected.len(),
+            "dropping encoded segment; queue holds only the protected init"
+        );
+    }
+}
+
+/// Move output-queue segments into the media server's live-stream channel.
 /// When the consumer closes (client disconnect or source switch), the whole
 /// session is torn down (spec §4.2).
+///
+/// Drop policy is media-aware: a fragment that does not fit is dropped as a
+/// whole (a skipped play interval, never a truncated box); the init segment
+/// is never dropped — it is retried until the consumer makes room, so a
+/// restart always leads with a fresh, valid initialization.
 fn forwarder_loop(
-    output: Arc<BoundedDropOldest<Vec<u8>>>,
+    output: Arc<BoundedDropOldest<EncodedSegment>>,
     server_tx: mpsc::Sender<Vec<u8>>,
     stop: Arc<AtomicBool>,
+    dropped: Arc<AtomicUsize>,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        if let Some(chunk) = output.try_pop() {
-            match server_tx.try_send(chunk) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(chunk)) => {
-                    // The server buffer is full (slow client): drop the chunk
-                    // and accept a transient glitch (spec §6).
-                    tracing::debug!(
-                        bytes = chunk.len(),
-                        "dropping encoded chunk; consumer is slow"
-                    );
+        if let Some(segment) = output.try_pop() {
+            let is_init = matches!(segment, EncodedSegment::Init(_));
+            let mut bytes = segment.into_bytes();
+            loop {
+                match server_tx.try_send(bytes) {
+                    Ok(()) => break,
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        bytes = returned;
+                        if is_init {
+                            // The init must reach the consumer: wait for the
+                            // slow client to drain instead of dropping it
+                            // (a fragment drop is a skip, an init drop is a
+                            // corrupt stream).
+                            tracing::debug!(
+                                "waiting for the consumer to make room for the init segment"
+                            );
+                            std::thread::sleep(IDLE_POLL);
+                        } else {
+                            // The server buffer is full (slow client): drop
+                            // the whole fragment and accept a transient
+                            // glitch (spec §6).
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                            tracing::debug!(
+                                bytes = bytes.len(),
+                                "dropping encoded fragment; consumer is slow"
+                            );
+                            break;
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::info!("screen stream consumer closed; tearing down the encoder");
+                        stop.store(true, Ordering::Relaxed);
+                        break;
+                    }
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    tracing::info!("screen stream consumer closed; tearing down the encoder");
-                    stop.store(true, Ordering::Relaxed);
+                if stop.load(Ordering::Relaxed) {
                     break;
                 }
             }

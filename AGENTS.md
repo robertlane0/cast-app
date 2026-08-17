@@ -232,9 +232,10 @@ src/
     mod.rs
     ffmpeg_discover.rs   # PATH lookup; bool result + cached
     bgra_rgba.rs         # safe BGRA -> RGBA conversion
+    segments.rs          # Mp4Segmenter: parse ffmpeg stdout into whole fMP4 segments
     capture.rs           # xcap monitor selection + 30 fps capture thread
     ffmpeg.rs            # Command builder, lifecycle, EOF+kill policy
-    bridge.rs            # capture -> ffmpeg stdin pipe, stdout reader thread
+    bridge.rs            # capture -> ffmpeg stdin pipe, segment queue, stdout reader threads
 
 tests/
   dns_parser_tests.rs
@@ -420,10 +421,11 @@ acceptance criteria pass.
   - `-movflags frag_keyframe+empty_moov` baseline; `default_base_moof` fallback recorded pending real-receiver validation.
 - [x] `bridge.rs`:
   - `BoundedDropOldest` cap 2 capture→controller (drop-oldest; eviction is producer-side, so the queue stays ≤2 under bursts).
-  - Controller thread (owns `Ffmpeg`, writes stdin, restart on resolution change, EOF→wait→kill teardown); dedicated stdout reader thread per encoder generation (cap-8 drop-oldest output queue); forwarder thread pushes encoded chunks into the media server's live channel (cap 8) and tears down the session when the consumer closes.
+  - Controller thread (owns `Ffmpeg`, writes stdin, restart on resolution change, EOF→wait→kill teardown); dedicated stdout reader thread per encoder generation — readers parse stdout into **whole fMP4 segments** (`Mp4Segmenter`, `screen/segments.rs`) and push them through a cap-8 drop-oldest queue that **never evicts the init segment**; forwarder thread pushes whole segments into the media server's live channel (cap 8, drop-newest on overflow: the in-hand segment is discarded whole, the init retried until room) and tears down the session when the consumer closes.
   - **Lesson:** a fake encoder that forks background children survives SIGKILL of the shell and keeps the stdout/stderr pipes open forever — bridge `join()` hangs on the readers. Test fakes must kill their own children on stdin EOF.
+  - **Lesson (ISS-009, byte-level drop corruption):** drop-oldest on *raw byte chunks* can slice a box mid-header — the receiver sees a truncated fMP4 and stalls or dies. Backpressure must operate on whole segments: the reader accumulates boxes (size≥8, largesize handled, 64 MiB cap, opaque fallback on a corrupt header, truncated tail at EOF dropped), so an overflow drop always discards an entire `moof`+`mdat` fragment and the wire never carries a partial box. A restart (resolution change) additionally clears the segment queue and joins the old readers *before* the new encoder starts, so the consumer sees exactly one init segment followed by complete fragments.
 - **Lesson (Phase 12):** POSIX 2.9.3.1 gives an *asynchronous list* (`cmd &`) a `/dev/null` stdin whenever job control is off — so `cat >/dev/null &` EOFs instantly, `wait $CPID` returns, and the emitter is killed before any chunk reaches the pipe. A fake encoder that relied on that pattern failed ~50% of `screen_pipeline_tests` runs (the emitter raced the kill). Fix: `exec 3<&0; cat >/dev/null <&3 &` — an explicit fd redirect overrides the implicit `/dev/null` assignment and `cat` then genuinely holds the stdin pipe until the bridge closes it (EOF → the script kills its own emitter → clean exit).
-- [x] **Tests:** `tests/screen_pipeline_tests.rs` (5: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
+- [x] **Tests:** `tests/screen_pipeline_tests.rs` (7: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown, slow-consumer whole-segment drops, restart emits a fresh init) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
 - [x] **Gate:** `cargo test --test screen_pipeline_tests --test screen_e2e` green.
 
 ### Phase 9 — GUI (`app.rs`) ← `02-gui.md`
@@ -493,7 +495,7 @@ acceptance criteria pass.
 - **Channels:**
   - GUI ↔ backend: `tokio::sync::mpsc::unbounded_channel`.
   - Capture → bridge: bounded(2), drop-oldest.
-  - Encoder → HTTP: bounded(8), drop-oldest.
+  - Encoder → HTTP: bounded(8) **whole-segment** backpressure (`EncodedSegment` items, never raw bytes — a dropped item must be an entire fMP4 fragment so no partial box reaches the wire).
 - **Logging:** `tracing::{info,warn,error,debug}`. No `println!` outside the pre-logging startup banner in `main.rs`.
 - **Tests:** `#[tokio::test]` for async, `#[test]` for sync. Integration tests are separate files under `tests/`.
 - **Commit style:** conventional commits — `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`.

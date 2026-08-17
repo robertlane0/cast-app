@@ -49,7 +49,7 @@ It contains at least these logical tasks:
 
 A dedicated standard thread polls display frames because OS capture calls may block.
 
-It passes captured data toward the asynchronous media pipeline through a bounded channel (drop-oldest on overflow).
+It passes captured data toward the asynchronous media pipeline through a bounded channel (drop-oldest on overflow). Encoded stdout is likewise carried through bounded channels whose elements are whole fMP4 segments (drop-newest at the media-server channel, drop-oldest in the reader queue with the init segment never evicted), so slow consumers lose whole fragments, never partial boxes.
 
 ## 3. Communication boundaries
 
