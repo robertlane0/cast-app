@@ -568,3 +568,201 @@ async fn encoder_restart_emits_a_fresh_valid_init_segment() {
     assert_eq!(error, None, "no pipeline error expected: {error:?}");
     let _ = std::fs::remove_file(&log);
 }
+
+// ---------------------------------------------------------------------------
+// Wayland portal pipeline (Linux): a fake `ScreenCast` and a fake PipeWire
+// spawner drive the real controller/encoder/server half of the bridge
+// (`05-screen-capture.md` §3.4), so the portal mode is exercised without a
+// real portal, a PipeWire daemon, or `ffmpeg` on PATH.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+mod portal_pipeline {
+    use super::*;
+    use std::io;
+    use std::os::fd::OwnedFd;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use cast_app::screen::pipewire::{PixFmt, PwFormat};
+    use cast_app::screen::portal::{AbortSignal, PortalError, PortalStream, ScreenCast};
+    use cast_app::util::backpressure::BoundedDropOldest;
+
+    /// Trait fake: records `Close` calls and answers the dance with a fixed
+    /// 32×32 stream.
+    struct FakeScreenCast {
+        closed: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ScreenCast for FakeScreenCast {
+        fn create_session(&self, _session_handle_token: &str) -> Result<String, PortalError> {
+            Ok("/org/freedesktop/portal/desktop/session/fake".to_string())
+        }
+
+        fn select_sources(&self, _session: &str) -> Result<(), PortalError> {
+            Ok(())
+        }
+
+        fn start(&self, _session: &str, _abort: &AbortSignal) -> Result<PortalStream, PortalError> {
+            Ok(PortalStream {
+                id: 1,
+                size: (32, 32),
+            })
+        }
+
+        fn open_pipewire_remote(&self, _session: &str) -> Result<OwnedFd, PortalError> {
+            let file = std::fs::File::open("/dev/null")
+                .map_err(|error| PortalError::Malformed(format!("open: {error}")))?;
+            Ok(OwnedFd::from(file))
+        }
+
+        fn close(&self, session: &str) -> Result<(), PortalError> {
+            self.closed.lock().unwrap().push(session.to_string());
+            Ok(())
+        }
+    }
+
+    /// Frame producer matching `PipewireSpawner`: reports the negotiated
+    /// format immediately, then pushes 32×32 BGR0 frames until stopped.
+    fn fake_spawner(
+        _fd: OwnedFd,
+        frames: Arc<BoundedDropOldest<Vec<u8>>>,
+        status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
+        stop: Arc<AtomicBool>,
+    ) -> io::Result<std::thread::JoinHandle<()>> {
+        status
+            .send(Ok(PwFormat {
+                width: 32,
+                height: 32,
+                pix_fmt: PixFmt::Bgr0,
+            }))
+            .expect("the controller must be waiting for the format");
+        Ok(std::thread::spawn(move || {
+            let mut counter = 0u8;
+            while !stop.load(Ordering::Relaxed) {
+                frames.push(vec![counter; 32 * 32 * 4]);
+                counter = counter.wrapping_add(1);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }))
+    }
+
+    /// Spawner that fails the negotiation: the controller must surface the
+    /// error and tear down without ever spawning an encoder.
+    fn failing_spawner(
+        _fd: OwnedFd,
+        _frames: Arc<BoundedDropOldest<Vec<u8>>>,
+        status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
+        stop: Arc<AtomicBool>,
+    ) -> io::Result<std::thread::JoinHandle<()>> {
+        let _ = status.send(Err("pipewire exploded".to_string()));
+        Ok(std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }))
+    }
+
+    /// The portal dance + fake capture frames reach the real encoder half
+    /// and become a valid fMP4 stream on the wire; teardown stops the
+    /// capture thread and closes the portal session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn portal_pipeline_streams_frames_and_closes_the_session() {
+        let (server, shutdown, port) = start_server().await;
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        server.set_source(ActiveSource::Screen(
+            cast_app::screen::capture::WAYLAND_SCREEN_ENTRY.to_string(),
+        ));
+        let log = scratch("portal");
+        let _ = std::fs::remove_file(&log);
+        let closed: Arc<Mutex<Vec<String>>> = Arc::default();
+
+        let bridge = ScreenBridge::start_portal(
+            cast_app::screen::capture::WAYLAND_SCREEN_ENTRY.to_string(),
+            server.clone(),
+            events_tx,
+            shutdown,
+            Some(Box::new(FakeScreenCast {
+                closed: Arc::clone(&closed),
+            })),
+            Some(Arc::new(fake_spawner)),
+            Some((
+                fake_encoder(),
+                vec!["fmp4".into(), log.display().to_string()],
+            )),
+        )
+        .expect("portal bridge must start");
+        wait_for_generation(&server, 2).await;
+        wait_until("encoder start", || read_log(&log).len() == 1);
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/stream");
+        let response = tokio::time::timeout(WAIT, client.get(&url).send())
+            .await
+            .expect("GET /stream timed out")
+            .expect("GET /stream must succeed");
+        assert_eq!(response.status(), 200);
+        let mut stream = response.bytes_stream();
+        let mut received: Vec<u8> = Vec::new();
+        read_window(&mut stream, &mut received, Duration::from_secs(2)).await;
+        assert!(
+            !received.is_empty(),
+            "the portal pipeline must deliver encoded bytes"
+        );
+        assert_whole_fmp4_stream(&received);
+        drop(stream);
+
+        let error = bridge.last_error();
+        bridge.stop();
+        bridge.join();
+        assert_eq!(error, None, "no pipeline error expected: {error:?}");
+        assert!(
+            !closed.lock().unwrap().is_empty(),
+            "teardown must close the portal session"
+        );
+        let _ = std::fs::remove_file(&log);
+    }
+
+    /// A negotiation failure (the PipeWire spawner reports `Err`) surfaces
+    /// as a pipeline error, no encoder ever spawns, and the session is
+    /// cleaned up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn portal_negotiation_failure_surfaces_an_error() {
+        let (server, shutdown, _port) = start_server().await;
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let log = scratch("portal-fail");
+        let _ = std::fs::remove_file(&log);
+        let closed: Arc<Mutex<Vec<String>>> = Arc::default();
+
+        let bridge = ScreenBridge::start_portal(
+            cast_app::screen::capture::WAYLAND_SCREEN_ENTRY.to_string(),
+            server.clone(),
+            events_tx,
+            shutdown,
+            Some(Box::new(FakeScreenCast {
+                closed: Arc::clone(&closed),
+            })),
+            Some(Arc::new(failing_spawner)),
+            Some((
+                fake_encoder(),
+                vec!["fmp4".into(), log.display().to_string()],
+            )),
+        )
+        .expect("portal bridge must start");
+        wait_until("failure surfaced", || bridge.last_error().is_some());
+
+        let error = bridge.last_error().expect("reported error");
+        assert!(
+            error.contains("pipewire exploded"),
+            "unexpected error text: {error}"
+        );
+        assert!(!log.exists(), "no encoder may spawn when negotiation fails");
+        bridge.stop();
+        bridge.join();
+        assert!(
+            !closed.lock().unwrap().is_empty(),
+            "prepare_portal must close the session on failure"
+        );
+        let _ = std::fs::remove_file(&log);
+    }
+}

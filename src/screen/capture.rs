@@ -37,13 +37,34 @@ pub struct Frame {
     pub bytes: Vec<u8>,
 }
 
+/// The single "monitor" entry exposed on Wayland sessions (portal-driven
+/// capture; `05-screen-capture.md` §3.4). The portal yields one stream for
+/// the whole monitor selection, so there is nothing to enumerate.
+pub const WAYLAND_SCREEN_ENTRY: &str = "Screen";
+
 /// Names of all monitors, sorted and deduplicated (for
 /// `BackendEvent::DisplaysUpdated`).
 ///
-/// On a Wayland-only session this returns an error and the Display source
-/// must be disabled (spec §3; `01-architecture.md` §8).
+/// On a Wayland-only session this returns the virtual [`WAYLAND_SCREEN_ENTRY`]
+/// entry when the portal path is usable (ffmpeg present + portal reachable),
+/// so the Display source stays available; otherwise it returns an error and
+/// the Display source must be disabled (spec §3; `01-architecture.md` §8).
 pub fn monitor_names() -> Result<Vec<String>, String> {
     if is_wayland_session() {
+        #[cfg(target_os = "linux")]
+        {
+            if crate::screen::ffmpeg_discover::ffmpeg_available()
+                && crate::screen::portal::portal_available()
+            {
+                return Ok(vec![WAYLAND_SCREEN_ENTRY.to_string()]);
+            }
+            return Err(
+                "Wayland screen capture needs ffmpeg on PATH and the xdg-desktop-portal \
+                 service; install ffmpeg and run a portal-backed session"
+                    .to_string(),
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
         return Err(
             "screen capture is unavailable on Wayland sessions; run under X11/XWayland".to_string(),
         );

@@ -40,7 +40,7 @@ The capture implementation SHALL:
 - repeatedly capture raw byte frames at a fixed 30 fps;
 - run capture polling on a dedicated `std::thread::spawn` thread because OS capture APIs can block.
 
-On Linux Wayland sessions (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set), `xcap` capture is not reliably available: monitor enumeration fails with an explanatory error, the Display source is disabled (empty monitor list), and the capture thread refuses to start (per the platform policy in `01-architecture.md` §8).
+On Linux Wayland sessions (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set), `xcap` capture is not reliably available: monitor enumeration fails with an explanatory error, the Display source is disabled (empty monitor list), and the capture thread refuses to start (per the platform policy in `01-architecture.md` §8). Wayland sessions are instead served through the xdg-desktop-portal ScreenCast interface (§3.4).
 
 ### 3.1 Pixel format
 
@@ -55,6 +55,18 @@ The pinned `xcap` version was verified at implementation time (2026-08, against 
 
 - Transient capture errors SHALL be logged and the loop SHALL continue.
 - After 5 consecutive capture failures, the pipeline SHALL stop and surface an error to the GUI.
+
+### 3.4 Wayland capture (Linux)
+
+There is no stock `ffmpeg` PipeWire input device, so a Wayland pipeline uses the **xdg-desktop-portal ScreenCast** D-Bus interface (pure-Rust `zbus`) to obtain a PipeWire stream fd, reads frames with an **in-process PipeWire client** (pure-Rust `pipewire`), and feeds them to the same `ffmpeg` child as rawvideo — pixel format is negotiated, never converted.
+
+- **Monitor list:** on Wayland the Display tab shows the single virtual entry `Screen` instead of xcap monitor names. `monitor_names()` returns `["Screen"]` iff `ffmpeg` is on PATH and the portal is reachable on the session bus (`name_has_owner("org.freedesktop.portal.Desktop")`); otherwise the Display source is disabled with an explanatory error.
+- **Portal client (`screen/portal.rs`):** `create_session` → `select_sources` (monitors only) → `start` → `open_pipewire_remote`, followed by `close` on teardown. The `Request.Response` signal (code 0 = success, 1 = canceled, ≥2 = rejected) is subscribed to **before** each triggering call; the match rule scopes on `interface == org.freedesktop.portal.Request`, `member == Response` and `path_namespace == /org/freedesktop/portal/desktop/request` (a trailing slash is not a valid object path). A non-zero response code is accepted even when the payload lacks the expected key (canceled responses carry an empty `results` dict) — waiting only for the key would hang forever on a canceled dialog. Stale responses for earlier requests (KDE reuses one request path per session) are skipped by an expected-key filter. All arguments follow the portal's D-Bus signatures: options are `a{sv}` (`HashMap` — a tuple array serializes as `a(sv)` and is rejected), and the session handle is an `o` (object path), not a string.
+- **Dialog + abort:** `start` blocks until the user accepts the share dialog; the bridge runs the whole dance on the controller `std::thread` (a pending dialog must never block the GUI or the Tokio runtime), and an `AbortSignal` (bridge stop flag + shutdown watch) interrupts the wait — a pre-set flag returns `Aborted` immediately, and a never-responding portal is polled on a 50 ms timer.
+- **PipeWire client (`screen/pipewire.rs`):** the portal's stream fd is connected with `pw::init` + `Context::connect_fd`; a capture `std::thread` drives `Loop::iterate` (pollable, so the thread checks its stop flag) and copies whole buffers into the bridge's cap-2 drop-oldest frame queue. The negotiated format (width × height × 4-byte pixel format) is reported exactly once over a status channel; later failures are `Err`s on the same channel. Format changes restart the encoder like an xcap resolution change; a negotiation failure (or a canceled/rejected dialog) surfaces `StreamError` with no encoder ever spawned.
+- **Pixel formats:** only 4-byte formats are negotiated (`rgb0`/`bgr0`/`rgba`/`bgra`, mapped straight to `-pix_fmt`), so frame byte counts and the encoder's `-s WxH` math are identical to the X11 path and no conversion runs. `MAX_STREAM_DIMENSION` (16 384) rejects absurd sizes.
+- **Teardown:** stop the PipeWire thread (flag + join), then `Close` the portal session, then EOF → wait → kill the encoder. A failed negotiation cleans up everything already acquired (thread joined, session closed) before returning.
+- **Testing:** `tests/portal_tests.rs` speaks the real client over a zbus p2p socket pair to a fake portal implementing the real D-Bus interface (this caught signature mismatches — `a{sv}` options, `o` session handle, the `OpenPipeWireRemote` member's exact capitalization, and the non-zero-code hang). `tests/screen_pipeline_tests.rs` drives the whole portal pipeline through the real bridge with a fake `ScreenCast` + fake PipeWire spawner + fake encoder, including the negotiation-failure path. Real-portal interaction requires a Wayland desktop and is verified manually (§11).
 
 ## 4. ffmpeg subprocess
 
@@ -76,7 +88,7 @@ The configuration is:
 pipe:1
 ```
 
-with `-s <WxH>` set from the selected monitor's resolution.
+with `-s <WxH>` set from the selected monitor's resolution (X11) or the negotiated PipeWire format (Wayland, §3.4), and `-pix_fmt` from the platform: `rgba` for xcap, or the negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland.
 
 The subprocess SHALL:
 
@@ -149,3 +161,6 @@ Screen mirroring SHALL be video-only. Audio capture and muxing are a documented 
 - [x] Encoded-byte backpressure is segment-aware: overflow drops whole fMP4 segments (never partial boxes, never the init segment), and an encoder restart emits a fresh init that precedes all new fragments (tested by `slow_consumer_receives_only_whole_fmp4_segments` and `encoder_restart_emits_a_fresh_valid_init_segment` with the `fmp4` fake-encoder mode).
 - [x] Encoded bytes can be streamed by the local HTTP server (cap-8 segment output queue → forwarder → media-server live channel; `screen_e2e` consumes the stream end-to-end).
 - [x] No unsafe Rust or unsafe C-FFI encoder integration is introduced.
+- [x] Wayland sessions are served through xdg-desktop-portal + an in-process PipeWire client instead of `xcap` (a virtual `Screen` display entry; `screen/portal.rs`, `screen/pipewire.rs`; the portal dance runs on the controller thread and is abortable).
+- [x] The portal client matches the real D-Bus wire format (verified by `tests/portal_tests.rs` against a fake portal over a zbus p2p socket pair: `a{sv}` options, `o` session handles, exact member names, non-zero response codes terminate the wait).
+- [x] The Wayland pipeline is covered end-to-end without a real portal/PipeWire (`portal_pipeline_streams_frames_and_closes_the_session`, `portal_negotiation_failure_surfaces_an_error` in `tests/screen_pipeline_tests.rs`).

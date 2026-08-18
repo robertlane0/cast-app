@@ -41,6 +41,18 @@ impl Ffmpeg {
         Self::spawn_program(&program, width, height)
     }
 
+    /// Spawn `ffmpeg` from PATH encoding raw input in the negotiated
+    /// PipeWire pixel format (Wayland portal pipeline,
+    /// `05-screen-capture.md` §3.4). All portal formats are packed 4-byte
+    /// variants (rgb0/bgr0/rgba/bgra), so the frame geometry math is
+    /// identical to the RGBA path.
+    pub fn spawn_pipewire(pix_fmt: &str, width: u32, height: u32) -> io::Result<Self> {
+        let program =
+            crate::screen::ffmpeg_discover::ffmpeg_path().unwrap_or_else(|| "ffmpeg".into());
+        let command = build_command(&program, width, height, pix_fmt);
+        spawn_inner(command)
+    }
+
     /// Spawn `program` with a fully custom argument vector (fake encoders in
     /// tests, where the spec §4 args are not wanted).
     pub fn spawn_custom<P: AsRef<Path>>(program: P, args: &[&str]) -> io::Result<Self> {
@@ -56,7 +68,7 @@ impl Ffmpeg {
     /// Spawn a specific encoder program with the spec §4 argument set
     /// (tests substitute fake scripts only via [`Ffmpeg::spawn_custom`]).
     pub fn spawn_program<P: AsRef<Path>>(program: P, width: u32, height: u32) -> io::Result<Self> {
-        let command = build_command(program.as_ref(), width, height);
+        let command = build_command(program.as_ref(), width, height, "rgba");
         spawn_inner(command)
     }
 
@@ -162,7 +174,9 @@ fn spawn_inner(mut command: Command) -> io::Result<Ffmpeg> {
 }
 
 /// Build the encoder `Command` with the spec §4 argument set plus the
-/// validated live-stream additions.
+/// validated live-stream additions. `pix_fmt` is `rgba` for the X11
+/// capture path and the negotiated rgb0/bgr0/rgba/bgra for the Wayland
+/// portal path (`05-screen-capture.md` §3.4).
 ///
 /// fMP4 flags: the `frag_keyframe+empty_moov` baseline writes `moov` up front
 /// (spec §4.3). `-g 30` forces a keyframe every 30 frames (1 s at 30 fps):
@@ -170,24 +184,24 @@ fn spawn_inner(mut command: Command) -> io::Result<Ffmpeg> {
 /// the stream. `default_base_moof` is the documented fallback if a real
 /// receiver stalls at "Buffering" (AGENTS.md §12); the working set is
 /// validated against a real receiver during integration.
-pub(crate) fn build_command(program: &Path, width: u32, height: u32) -> Command {
+pub(crate) fn build_command(program: &Path, width: u32, height: u32, pix_fmt: &str) -> Command {
     let mut command = Command::new(program);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .args(encoder_args(width, height));
+        .args(encoder_args(width, height, pix_fmt));
     command
 }
 
 /// The spec §4 encoder argument vector plus the recorded working-set
 /// additions (`-g 30`; unit-tested byte-for-byte).
-pub(crate) fn encoder_args(width: u32, height: u32) -> Vec<String> {
+pub(crate) fn encoder_args(width: u32, height: u32, pix_fmt: &str) -> Vec<String> {
     vec![
         "-f".into(),
         "rawvideo".into(),
         "-pix_fmt".into(),
-        "rgba".into(),
+        pix_fmt.into(),
         "-s".into(),
         format!("{width}x{height}"),
         "-r".into(),
@@ -245,7 +259,7 @@ mod tests {
 
     #[test]
     fn encoder_args_are_the_working_set() {
-        let args = encoder_args(WIDTH, HEIGHT);
+        let args = encoder_args(WIDTH, HEIGHT, "rgba");
         assert_eq!(
             args,
             vec![
@@ -274,6 +288,17 @@ mod tests {
                 "pipe:1",
             ]
         );
+    }
+
+    #[test]
+    fn pipewire_encoder_args_carry_the_negotiated_format() {
+        // The portal pipeline differs from the X11 path only in `-pix_fmt`.
+        for pix_fmt in ["rgb0", "bgr0", "rgba", "bgra"] {
+            let args = encoder_args(WIDTH, HEIGHT, pix_fmt);
+            assert_eq!(args[3], pix_fmt);
+            assert_eq!(args[1], "rawvideo", "input stays rawvideo");
+            assert_eq!(args[5], "320x240");
+        }
     }
 
     #[test]

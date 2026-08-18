@@ -132,7 +132,7 @@ struct SupervisorState {
 }
 
 impl SupervisorState {
-    fn handle_command(&mut self, command: AppCommand, shutdown: Shutdown) {
+    async fn handle_command(&mut self, command: AppCommand, shutdown: Shutdown) {
         match command {
             AppCommand::SelectReceiver(device) => {
                 // LAN IP re-selection on receiver change (`04-media-proxy.md`
@@ -144,7 +144,7 @@ impl SupervisorState {
                 // Tab switches are GUI-side enablement; re-enumerate displays
                 // when the Display tab is opened so hotplug is picked up.
                 if tab == SourceTab::Display {
-                    self.refresh_displays();
+                    self.refresh_displays().await;
                 }
             }
             AppCommand::SelectDisplay(monitor) => {
@@ -157,16 +157,26 @@ impl SupervisorState {
                 self.current_source = Some(ActiveSource::Screen(monitor.clone()));
                 self.server
                     .set_source(ActiveSource::Screen(monitor.clone()));
-                match ScreenBridge::start(
-                    monitor,
-                    self.server.clone(),
-                    self.events.clone(),
-                    shutdown.clone(),
-                ) {
-                    Ok(bridge) => self.screen = Some(bridge),
-                    Err(error) => {
+                // The pipeline start probes the display/portal service
+                // (xcap, zbus round-trips) and must not run on the executor
+                // task (AGENTS.md §12; on Wayland the portal dialog itself
+                // lives on the controller thread, so this is quick).
+                let events = self.events.clone();
+                let server = self.server.clone();
+                let spawn = tokio::task::spawn_blocking(move || {
+                    ScreenBridge::start(monitor, server, events, shutdown)
+                });
+                match spawn.await {
+                    Ok(Ok(bridge)) => self.screen = Some(bridge),
+                    Ok(Err(error)) => {
                         tracing::error!(%error, "screen pipeline failed to start");
                         let _ = self.events.send(BackendEvent::StreamError(error));
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "screen pipeline start task failed");
+                        let _ = self.events.send(BackendEvent::StreamError(
+                            "screen pipeline failed to start".to_string(),
+                        ));
                     }
                 }
             }
@@ -252,13 +262,19 @@ impl SupervisorState {
         }
     }
 
-    fn refresh_displays(&self) {
-        match crate::screen::capture::monitor_names() {
-            Ok(names) => {
+    async fn refresh_displays(&self) {
+        // `monitor_names` probes the display backend (xcap) and, on Wayland,
+        // the portal service over the session bus: keep it off the executor.
+        let result = tokio::task::spawn_blocking(crate::screen::capture::monitor_names).await;
+        match result {
+            Ok(Ok(names)) => {
                 let _ = self.events.send(BackendEvent::DisplaysUpdated(names));
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(%error, "display enumeration failed");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "display enumeration task failed");
             }
         }
     }
@@ -277,14 +293,19 @@ async fn supervise<C: Connector>(
     initial_port: u16,
 ) {
     // Displays are enumerated once at startup and again when the Display tab
-    // is opened (see `handle_command`).
-    let displays = crate::screen::capture::monitor_names();
+    // is opened (see `handle_command`). The probe hits the display backend
+    // (xcap, and on Wayland the portal service over the session bus), so it
+    // runs on a blocking worker.
+    let displays = tokio::task::spawn_blocking(crate::screen::capture::monitor_names).await;
     match displays {
-        Ok(names) => {
+        Ok(Ok(names)) => {
             let _ = events.send(BackendEvent::DisplaysUpdated(names));
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(%error, "display enumeration failed at startup");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "display enumeration task failed at startup");
         }
     }
 
@@ -342,7 +363,7 @@ async fn supervise<C: Connector>(
                 let Some(command) = command else {
                     break; // GUI dropped (application exit)
                 };
-                state.handle_command(command, shutdown.clone());
+                state.handle_command(command, shutdown.clone()).await;
             }
             event = connection_rx.recv() => {
                 let Some(event) = event else {

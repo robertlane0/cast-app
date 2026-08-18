@@ -57,6 +57,30 @@ const IDLE_POLL: Duration = Duration::from_millis(2);
 /// Chunk size used by the stdout reader (64 KiB, same as the media server).
 const STDOUT_CHUNK: usize = 64 * 1024;
 
+/// How the pipeline gets its raw frames (`05-screen-capture.md` §3, §3.4).
+pub enum PipelineInput {
+    /// xcap monitor capture (X11/macOS/Windows): the bridge spawns the
+    /// capture thread and sizes the first encoder from the monitor's current
+    /// resolution.
+    Frames {
+        initial_resolution: (u32, u32),
+        /// Spawn the xcap capture thread (real captures) or feed frames
+        /// externally via [`ScreenBridge::push_frame`] (test harness; the
+        /// thread is pointless there and must not hit the Wayland guard).
+        capture_thread: bool,
+    },
+    /// Wayland portal capture (Linux only): the controller runs the portal
+    /// dance on its own thread, spawns the PipeWire capture thread on the
+    /// portal's stream fd, and sizes the first encoder from the negotiated
+    /// format. `portal`/`capture` are injectable fakes for tests; `None`
+    /// means the real implementations.
+    #[cfg(target_os = "linux")]
+    Portal {
+        portal: Option<Box<dyn crate::screen::portal::ScreenCast>>,
+        capture: Option<Arc<crate::screen::pipewire::PipewireSpawner>>,
+    },
+}
+
 /// Handle to a running screen pipeline.
 pub struct ScreenBridge {
     monitor_name: String,
@@ -76,8 +100,11 @@ impl ScreenBridge {
     /// (`05-screen-capture.md` §5): capture thread, controller, encoder,
     /// stdout reader and forwarder, attached to `server`.
     ///
-    /// Fails with an explanatory error if `ffmpeg` is missing (the Display
-    /// source is disabled in that case) or the monitor cannot be resolved.
+    /// On a Wayland session this routes to the portal pipeline
+    /// ([`ScreenBridge::start_portal`], `05-screen-capture.md` §3.4), which
+    /// serves the virtual [`WAYLAND_SCREEN_ENTRY`] monitor. Fails with an
+    /// explanatory error if `ffmpeg` is missing (the Display source is
+    /// disabled in that case) or the monitor cannot be resolved.
     pub fn start(
         monitor_name: String,
         server: MediaServer,
@@ -89,15 +116,54 @@ impl ScreenBridge {
                 "ffmpeg was not found on PATH; the Display source is unavailable".to_string(),
             );
         }
+        #[cfg(target_os = "linux")]
+        if crate::screen::capture::is_wayland_session() {
+            return Self::start_portal(monitor_name, server, events, shutdown, None, None, None);
+        }
         let initial_resolution = crate::screen::capture::monitor_resolution(&monitor_name)?;
         Self::start_pipeline(
             monitor_name,
             server,
             events,
             shutdown,
-            initial_resolution,
+            PipelineInput::Frames {
+                initial_resolution,
+                capture_thread: true,
+            },
             None,
-            true,
+        )
+    }
+
+    /// Spawn the Wayland portal pipeline for the virtual [`WAYLAND_SCREEN_ENTRY`]
+    /// monitor (`05-screen-capture.md` §3.4): the controller thread runs the
+    /// portal dance, spawns the PipeWire capture thread on the portal's
+    /// stream fd, and sizes the encoder from the negotiated format.
+    ///
+    /// `portal`/`capture` inject fakes for tests; `None` uses the real
+    /// portal client and PipeWire spawner. `custom_encoder` substitutes a
+    /// fake program + args for `ffmpeg` (tests).
+    #[cfg(target_os = "linux")]
+    pub fn start_portal(
+        monitor_name: String,
+        server: MediaServer,
+        events: mpsc::UnboundedSender<BackendEvent>,
+        shutdown: Shutdown,
+        portal: Option<Box<dyn crate::screen::portal::ScreenCast>>,
+        capture: Option<Arc<crate::screen::pipewire::PipewireSpawner>>,
+        custom_encoder: Option<(std::path::PathBuf, Vec<String>)>,
+    ) -> Result<ScreenBridge, String> {
+        if custom_encoder.is_none() && !crate::screen::ffmpeg_discover::ffmpeg_available() {
+            return Err(
+                "ffmpeg was not found on PATH; the Display source is unavailable".to_string(),
+            );
+        }
+        Self::start_pipeline(
+            monitor_name,
+            server,
+            events,
+            shutdown,
+            PipelineInput::Portal { portal, capture },
+            custom_encoder,
         )
     }
 
@@ -116,9 +182,11 @@ impl ScreenBridge {
             server,
             events,
             shutdown,
-            initial_resolution,
+            PipelineInput::Frames {
+                initial_resolution,
+                capture_thread: false,
+            },
             custom_encoder,
-            false,
         )
     }
 
@@ -127,9 +195,8 @@ impl ScreenBridge {
         server: MediaServer,
         events: mpsc::UnboundedSender<BackendEvent>,
         shutdown: Shutdown,
-        initial_resolution: (u32, u32),
+        input: PipelineInput,
         custom_encoder: Option<(std::path::PathBuf, Vec<String>)>,
-        spawn_capture: bool,
     ) -> Result<ScreenBridge, String> {
         let frames = Arc::new(BoundedDropOldest::new(FRAME_QUEUE_CAPACITY));
         let output = Arc::new(BoundedDropOldest::new(OUTPUT_QUEUE_CAPACITY));
@@ -140,31 +207,42 @@ impl ScreenBridge {
         let reader_handles = Arc::new(Mutex::new(Vec::new()));
         let dropped_segments = Arc::new(AtomicUsize::new(0));
 
-        // Capture thread (dedicated std::thread; spec §3) — skipped when an
-        // external frame feeder was requested.
-        let capture_thread = if spawn_capture {
-            let mut capture = crate::screen::capture::start_capture(
-                monitor_name.clone(),
-                Arc::clone(&frames),
-                Arc::clone(&stop),
-                Arc::clone(&resolution_request),
-                report_once(
-                    events.clone(),
-                    Arc::clone(&failed),
+        // Capture thread (dedicated std::thread; spec §3) — only for the
+        // xcap path; the portal pipeline's frames arrive from the PipeWire
+        // capture thread spawned by the controller.
+        let capture_thread = match &input {
+            PipelineInput::Frames {
+                capture_thread: true,
+                ..
+            } => {
+                let mut capture = crate::screen::capture::start_capture(
+                    monitor_name.clone(),
+                    Arc::clone(&frames),
                     Arc::clone(&stop),
-                    Arc::clone(&last_error),
-                ),
-                shutdown.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            let handle = capture.join_handle();
-            drop(capture);
-            Some(handle)
-        } else {
-            None
+                    Arc::clone(&resolution_request),
+                    report_once(
+                        events.clone(),
+                        Arc::clone(&failed),
+                        Arc::clone(&stop),
+                        Arc::clone(&last_error),
+                    ),
+                    shutdown.clone(),
+                )
+                .map_err(|error| error.to_string())?;
+                let handle = capture.join_handle();
+                drop(capture);
+                Some(handle)
+            }
+            PipelineInput::Frames {
+                capture_thread: false,
+                ..
+            } => None,
+            #[cfg(target_os = "linux")]
+            PipelineInput::Portal { .. } => None,
         };
 
-        // Controller thread: owns the encoder lifecycle.
+        // Controller thread: owns the encoder lifecycle (and, on Wayland,
+        // the portal dance + PipeWire capture thread).
         let controller_frames = Arc::clone(&frames);
         let controller_output = Arc::clone(&output);
         let controller_stop = Arc::clone(&stop);
@@ -187,7 +265,7 @@ impl ScreenBridge {
                         events,
                         shutdown,
                     },
-                    initial_resolution,
+                    input,
                     custom_encoder,
                 );
             })
@@ -345,14 +423,82 @@ struct ControllerContext {
     shutdown: Shutdown,
 }
 
+/// The encoder the controller currently owns: the X11 capture path always
+/// encodes RGBA; the portal path re-negotiates its pixel format when the
+/// compositor changes it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EncoderTarget {
+    X11((u32, u32)),
+    #[cfg(target_os = "linux")]
+    Portal(crate::screen::pipewire::PwFormat),
+}
+
+impl EncoderTarget {
+    /// Spawn the encoder for this target: the spec §4 args (X11) or the
+    /// negotiated portal format, or a custom fake program in tests.
+    fn spawn(
+        &self,
+        custom_encoder: &Option<(std::path::PathBuf, Vec<String>)>,
+    ) -> io::Result<Ffmpeg> {
+        match custom_encoder {
+            Some((program, args)) => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                Ffmpeg::spawn_custom(program, &args)
+            }
+            None => match self {
+                EncoderTarget::X11(size) => Ffmpeg::spawn(size.0, size.1),
+                #[cfg(target_os = "linux")]
+                EncoderTarget::Portal(format) => Ffmpeg::spawn_pipewire(
+                    format.pix_fmt.ffmpeg_name(),
+                    format.width,
+                    format.height,
+                ),
+            },
+        }
+    }
+
+    /// Human-readable form for restart logs.
+    fn describe(&self) -> String {
+        match self {
+            EncoderTarget::X11(size) => format!("{}x{} (RGBA)", size.0, size.1),
+            #[cfg(target_os = "linux")]
+            EncoderTarget::Portal(format) => format!(
+                "{}x{} ({})",
+                format.width,
+                format.height,
+                format.pix_fmt.ffmpeg_name()
+            ),
+        }
+    }
+}
+
+/// Portal-pipeline state owned by the controller: the portal client, the
+/// PipeWire capture thread it spawned, and the negotiated format.
+#[cfg(target_os = "linux")]
+struct PortalState {
+    /// Negotiated stream format (also the encoder's `-s`/`-pix_fmt`).
+    format: crate::screen::pipewire::PwFormat,
+    /// Live status channel from the PipeWire capture thread: format updates
+    /// and failure reports.
+    status_rx: std::sync::mpsc::Receiver<Result<crate::screen::pipewire::PwFormat, String>>,
+    /// Stop flag for the PipeWire capture thread.
+    pw_stop: Arc<AtomicBool>,
+    /// The capture thread, joined during teardown.
+    pw_thread: Option<JoinHandle<()>>,
+    /// The portal client, closed during teardown.
+    portal: Option<Box<dyn crate::screen::portal::ScreenCast>>,
+    /// The open portal session handle.
+    session: String,
+}
+
 /// The controller: owns the encoder child for the current resolution, feeds
-/// it frames, restarts it on resolution changes, and runs the spec §4.2
-/// teardown (EOF → wait ≤5 s → kill) on stop or failure.
+/// it frames, restarts it on resolution/format changes, and runs the spec
+/// §4.2 teardown (EOF → wait ≤5 s → kill) on stop or failure.
 ///
 /// `custom_encoder` substitutes a fake program + args for `ffmpeg` (tests).
 fn controller_loop(
     ctx: ControllerContext,
-    initial_resolution: (u32, u32),
+    input: PipelineInput,
     custom_encoder: Option<(std::path::PathBuf, Vec<String>)>,
 ) {
     let ControllerContext {
@@ -368,7 +514,37 @@ fn controller_loop(
     } = ctx;
     let fail = report_once(events, failed, Arc::clone(&stop), last_error);
     let teardown_requested = || stop.load(Ordering::Relaxed) || shutdown.is_shutting_down();
-    let mut encoder = match spawn_encoder(initial_resolution, &custom_encoder) {
+
+    // Portal pipeline: run the dance and spawn the capture thread before
+    // the first encoder (its format sizes the encoder's `-s WxH`).
+    #[cfg(target_os = "linux")]
+    let mut portal_state: Option<PortalState> = None;
+    let mut current = match input {
+        PipelineInput::Frames {
+            initial_resolution, ..
+        } => EncoderTarget::X11(initial_resolution),
+        #[cfg(target_os = "linux")]
+        PipelineInput::Portal { portal, capture } => {
+            let state = match prepare_portal(
+                portal,
+                capture,
+                Arc::clone(&frames),
+                stop.clone(),
+                shutdown.clone(),
+            ) {
+                Ok(state) => state,
+                Err(error) => {
+                    fail(&format!("portal capture failed: {error}"));
+                    return;
+                }
+            };
+            let target = EncoderTarget::Portal(state.format);
+            portal_state = Some(state);
+            target
+        }
+    };
+
+    let mut encoder = match current.spawn(&custom_encoder) {
         Ok(encoder) => encoder,
         Err(error) => {
             fail(&format!("failed to start ffmpeg: {error}"));
@@ -380,18 +556,34 @@ fn controller_loop(
         spawn_stdout_reader(stdout, Arc::clone(&output), Arc::clone(&reader_handles));
     }
     let mut stdin = encoder.take_stdin();
-    let mut current_size = initial_resolution;
 
     while !teardown_requested() {
-        // Resolution change → restart the encoder with the new `-s WxH`
-        // (spec §3.2).
+        // A restart candidate: the capture thread requests one via the
+        // resolution slot (xcap path) or the portal status channel.
+        let mut next: Option<EncoderTarget> = None;
+        #[cfg(target_os = "linux")]
+        if let Some(state) = &portal_state {
+            match state.status_rx.try_recv() {
+                Ok(Ok(format)) => next = Some(EncoderTarget::Portal(format)),
+                Ok(Err(error)) => {
+                    if !teardown_requested() {
+                        fail(&format!("pipewire capture failed: {error}"));
+                    }
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
         let requested = *lock(&resolution_request);
         if let Some(size) = requested {
-            if size != current_size {
+            next = Some(EncoderTarget::X11(size));
+        }
+        if let Some(target) = next {
+            if target != current {
                 tracing::info!(
-                    width = size.0,
-                    height = size.1,
-                    "monitor resolution changed; restarting encoder"
+                    target = %target.describe(),
+                    "capture format changed; restarting encoder"
                 );
                 drop(stdin.take());
                 let _ = encoder.wait_graceful(GRACE_PERIOD);
@@ -405,7 +597,7 @@ fn controller_loop(
                     let _ = reader.join();
                 }
                 output.clear();
-                match spawn_encoder(size, &custom_encoder) {
+                match target.spawn(&custom_encoder) {
                     Ok(mut new_encoder) => {
                         if let Some(new_stdout) = new_encoder.take_stdout() {
                             spawn_stdout_reader(
@@ -416,16 +608,19 @@ fn controller_loop(
                         }
                         stdin = new_encoder.take_stdin();
                         encoder = new_encoder;
-                        current_size = size;
+                        current = target;
                     }
                     Err(error) => {
-                        fail(&format!("failed to restart ffmpeg at {size:?}: {error}"));
+                        fail(&format!(
+                            "failed to restart ffmpeg at {}: {error}",
+                            target.describe()
+                        ));
                         break;
                     }
                 }
-                *lock(&resolution_request) = None;
-                continue;
             }
+            *lock(&resolution_request) = None;
+            continue;
         }
 
         // Unexpected encoder exit (spec §4.2: non-zero status stops the
@@ -478,23 +673,133 @@ fn controller_loop(
         std::thread::sleep(IDLE_POLL);
     }
 
-    // Spec §4.2 teardown: EOF (drop stdin) → wait ≤5 s → kill.
+    // Spec §4.2 teardown: EOF (drop stdin) → wait ≤5 s → kill. The portal
+    // pipeline stops its capture thread and closes the portal session first
+    // (the dialog/stream may keep running otherwise; the session is owned by
+    // this controller).
+    #[cfg(target_os = "linux")]
+    if let Some(state) = portal_state.take() {
+        teardown_portal(state);
+    }
     drop(stdin);
     let _ = encoder.wait_graceful(GRACE_PERIOD);
     tracing::info!("encoder torn down");
 }
 
-/// Spawn the encoder with the spec §4 args, or the custom fake program.
-fn spawn_encoder(
-    size: (u32, u32),
-    custom_encoder: &Option<(std::path::PathBuf, Vec<String>)>,
-) -> io::Result<Ffmpeg> {
-    match custom_encoder {
-        Some((program, args)) => {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            Ffmpeg::spawn_custom(program, &args)
+/// Run the Wayland portal dance and spawn the PipeWire capture thread,
+/// returning the negotiated format and the pieces the teardown needs. Any
+/// error cleans up what was already acquired (capture thread joined, session
+/// closed) before returning.
+#[cfg(target_os = "linux")]
+fn prepare_portal(
+    portal: Option<Box<dyn crate::screen::portal::ScreenCast>>,
+    capture: Option<Arc<crate::screen::pipewire::PipewireSpawner>>,
+    frames: Arc<BoundedDropOldest<Vec<u8>>>,
+    stop: Arc<AtomicBool>,
+    shutdown: Shutdown,
+) -> Result<PortalState, String> {
+    use crate::screen::pipewire::{PipewireSpawner, PwFormat};
+    use crate::screen::portal::{AbortSignal, ScreenCast, ZbusScreenCast};
+
+    let portal: Box<dyn ScreenCast> = match portal {
+        Some(portal) => portal,
+        None => Box::new(ZbusScreenCast::connect_blocking().map_err(|error| error.to_string())?),
+    };
+    let session = portal
+        .create_session("cast_app_capture")
+        .map_err(|error| error.to_string())?;
+    portal
+        .select_sources(&session)
+        .map_err(|error| error.to_string())?;
+    let abort = AbortSignal::new(Arc::clone(&stop), shutdown.clone());
+    let _stream = portal
+        .start(&session, &abort)
+        .map_err(|error| error.to_string())?;
+    let fd = portal
+        .open_pipewire_remote(&session)
+        .map_err(|error| error.to_string())?;
+
+    let (status_tx, status_rx) = std::sync::mpsc::channel();
+    let pw_stop = Arc::new(AtomicBool::new(false));
+    let spawner: Arc<PipewireSpawner> = match capture {
+        Some(spawner) => spawner,
+        None => Arc::new(crate::screen::pipewire::spawn_pipewire_capture),
+    };
+    let pw_thread = spawner(fd, Arc::clone(&frames), status_tx, Arc::clone(&pw_stop))
+        .map_err(|error| error.to_string())?;
+
+    let format: PwFormat = match wait_for_format(&status_rx, &stop, &shutdown) {
+        Ok(format) => format,
+        Err(error) => {
+            pw_stop.store(true, Ordering::Relaxed);
+            let _ = pw_thread.join();
+            let _ = portal.close(&session);
+            return Err(error);
         }
-        None => Ffmpeg::spawn(size.0, size.1),
+    };
+    tracing::info!(
+        width = format.width,
+        height = format.height,
+        pix_fmt = format.pix_fmt.ffmpeg_name(),
+        "portal capture negotiated"
+    );
+    Ok(PortalState {
+        format,
+        status_rx,
+        pw_stop,
+        pw_thread: Some(pw_thread),
+        portal: Some(portal),
+        session,
+    })
+}
+
+/// Wait for the PipeWire capture thread to negotiate its format, polling the
+/// status channel against the teardown signals (a pending share dialog or a
+/// stalled stream must never block shutdown forever).
+#[cfg(target_os = "linux")]
+fn wait_for_format(
+    status_rx: &std::sync::mpsc::Receiver<Result<crate::screen::pipewire::PwFormat, String>>,
+    stop: &Arc<AtomicBool>,
+    shutdown: &Shutdown,
+) -> Result<crate::screen::pipewire::PwFormat, String> {
+    loop {
+        match status_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(format)) => return Ok(format),
+            Ok(Err(error)) => return Err(format!("pipewire capture failed: {error}")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::Relaxed) || shutdown.is_shutting_down() {
+                    return Err("capture aborted while waiting for the pipewire format".to_string());
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(
+                    "the pipewire capture thread ended before negotiating a format".to_string(),
+                );
+            }
+        }
+    }
+}
+
+/// Stop the PipeWire capture thread, join it, and close the portal session.
+#[cfg(target_os = "linux")]
+fn teardown_portal(state: PortalState) {
+    let PortalState {
+        format,
+        status_rx,
+        pw_stop,
+        pw_thread,
+        portal,
+        session,
+    } = state;
+    drop((format, status_rx));
+    pw_stop.store(true, Ordering::Relaxed);
+    if let Some(thread) = pw_thread {
+        let _ = thread.join();
+    }
+    if let Some(portal) = portal {
+        if let Err(error) = portal.close(&session) {
+            tracing::warn!(%error, "failed to close the portal session");
+        }
     }
 }
 

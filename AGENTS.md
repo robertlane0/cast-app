@@ -104,20 +104,37 @@ bytes     = "1"
 http      = "1"
 if-addrs = "0.15.0"
 url = "2"
-# Anonymous SMB network-share streaming (`04-media-proxy.md` §4.4): pure-Rust
-# SMB2 client (guest logon only). MIT OR Apache-2.0. Pulls thiserror 2.x —
-# a duplicate version vs. our thiserror 1.x is expected (`cargo tree
-# --duplicates` shows it); the two are type-incompatible, so never mix them
-# in one module.
-smb2 = "0.18"
-# `url` no longer re-exports `percent_encoding` (removed in url 2.5.8).
 percent-encoding = "2"
+# Pure-Rust SMB2/3 client for anonymous network-share streaming (`04-media-proxy.md` §4.4).
+# Empty username/password = guest; the crate exposes ErrorKind::AuthRequired so
+# authentication-required shares fail explicitly instead of prompting.
+smb2 = "0.18"
+# Stream utilities for the portal client's response wait (`screen/portal.rs`):
+# zbus's `MessageStream` needs `TryStreamExt`, and the abort race needs
+# `future::select`.
+futures-util = "0.3"
+
+# Linux-only Wayland screen capture (`05-screen-capture.md` §3.4): the
+# xdg-desktop-portal ScreenCast D-Bus interface (pure-Rust zbus) plus the
+# official freedesktop PipeWire client that consumes the portal's stream fd
+# in-process — stock FFmpeg has no PipeWire input device, so frames are
+# copied out of PipeWire buffers and fed to the `ffmpeg` child as rawvideo,
+# exactly like the X11 path. async-io drives the zbus futures on the
+# controller `std::thread` (`zbus::block_on` is `#[doc(hidden)]`).
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.9"
+# 5.13.x is the last line with MSRV ≤ 1.85 (5.19 requires rustc 1.87).
+# `p2p` (not in defaults) powers the fake-portal socket-pair tests.
+zbus = { version = ">=5.13, <5.14", features = ["p2p"] }
+# The proc-macro crate must stay in lockstep with the zbus lib: 5.19's macros
+# emit code referencing `object_server::DispatchResult2`, which 5.13 lacks.
+zbus_macros = ">=5.13, <5.14"
+async-io = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
 rcgen = "0.14.7"
 tokio-test = "0.4"
-futures-util = "0.3"
 
 # Cross-platform fake encoder for `tests/screen_pipeline_tests.rs` (ISS-012):
 # a compiled binary replaces the Unix-only `/bin/sh` fake-encoder scripts so
@@ -135,6 +152,12 @@ path = "tests/integration/http_e2e.rs"
 [[test]]
 name = "screen_e2e"
 path = "tests/integration/screen_e2e.rs"
+
+# Linux-only: portal client against a fake xdg-desktop-portal over a zbus
+# p2p socket pair (`05-screen-capture.md` §3.4). Empty on other platforms.
+[[test]]
+name = "portal_tests"
+path = "tests/portal_tests.rs"
 
 # Feature-gated: empty unless `--features e2e-cast` (see `[features]`).
 [[test]]
@@ -256,9 +279,11 @@ src/
     ffmpeg_discover.rs   # PATH lookup; bool result + cached
     bgra_rgba.rs         # safe BGRA -> RGBA conversion
     segments.rs          # Mp4Segmenter: parse ffmpeg stdout into whole fMP4 segments
-    capture.rs           # xcap monitor selection + 30 fps capture thread
+    capture.rs           # xcap monitor selection + 30 fps capture thread + WAYLAND_SCREEN_ENTRY
+    portal.rs            # xdg-desktop-portal ScreenCast client (zbus), AbortSignal, portal_available (Linux)
+    pipewire.rs          # in-process PipeWire client: negotiated PwFormat/PixFmt, capture thread (Linux)
     ffmpeg.rs            # Command builder, lifecycle, EOF+kill policy
-    bridge.rs            # capture -> ffmpeg stdin pipe, segment queue, stdout reader threads
+    bridge.rs            # capture -> ffmpeg stdin pipe, segment queue, stdout reader threads; PortalState + prepare/teardown_portal (Linux)
 
 tests/
   dns_parser_tests.rs
@@ -272,6 +297,7 @@ tests/
   runtime_tests.rs
   tls_e2e.rs            # self-signed cert via rcgen (dev-dep)
   screen_pipeline_tests.rs
+  portal_tests.rs       # Linux-only: real ZbusScreenCast vs fake portal over a zbus p2p socket pair
   smb_tests.rs          # smb:// parse + serve semantics via SmbConnector/SmbFile fakes
   gui_state_tests.rs
   support/
@@ -433,21 +459,25 @@ acceptance criteria pass.
   - **xcap 0.9.6 has no `Monitor::from_name`** → `Monitor::all()` + `name()` match (`monitor_by_name`, `monitor_resolution`); names enumerated for `DisplaysUpdated`.
   - 30 fps pacing (`std::thread::sleep`).
   - Resolution from xcap; restart signal on resolution change (controller restarts ffmpeg with new `-s WxH`).
-  - Wayland detection (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set on Linux) → error event, Display source disabled.
+  - Wayland detection (`XDG_SESSION_TYPE == "wayland"` or `WAYLAND_DISPLAY` set on Linux) → `monitor_names()` returns the virtual `["Screen"]` entry iff `ffmpeg_available() && portal_available()`, else Err; the capture thread refuses to start on Wayland (runtime path routes to `start_portal` instead).
   - 5 consecutive capture failures → stop + `StreamError`.
+- [x] `portal.rs` (Linux): pure-zbus `ZbusScreenCast` (`create_session`/`select_sources`/`start`/`open_pipewire_remote`/`close`) with the `Request.Response` signal subscribed before each call and filtered by expected key (stale responses skipped); `AbortSignal` (stop flag + shutdown) interrupts a pending dialog; `portal_available()` via blocking `name_has_owner`.
+- [x] `pipewire.rs` (Linux): `PwFormat`/`PixFmt` (4-byte formats only, mapped to `-pix_fmt`), `spawn_pipewire_capture` on a dedicated thread driving `Loop::iterate` (pollable), negotiated format reported exactly once over a status channel, later failures as `Err`.
 - [x] `ffmpeg.rs`:
-  - `Command` with spec §4 args (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, zerolatency, fMP4, `pipe:1`) **+ recorded working-set addition `-g 30`** (1 s keyframe interval; x264's default keyint=250 would delay fMP4 fragments ~8 s and stall live output).
+  - `Command` with spec §4 args (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, zerolatency, fMP4, `pipe:1`) **+ recorded working-set addition `-g 30`** (1 s keyframe interval; x264's default keyint=250 would delay fMP4 fragments ~8 s and stall live output); `encoder_args` takes the platform's `pix_fmt` (`rgba` for xcap, negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland) and `Ffmpeg::spawn_pipewire` drives the portal path.
   - stdin/stdout piped; stderr captured (50-line tail) for diagnostics.
   - Lifecycle: EOF → wait ≤5 s → kill → reap (`wait_graceful`); unexpected non-zero exit → error.
   - `-movflags frag_keyframe+empty_moov` baseline; `default_base_moof` fallback recorded pending real-receiver validation.
 - [x] `bridge.rs`:
+  - `PipelineInput::{Frames{initial_resolution, capture_thread}, Portal{portal, capture}}`; `ScreenBridge::start` routes `is_wayland_session()` → `start_portal` (which also accepts a `custom_encoder` for tests); `start_with_encoder` never spawns the xcap thread (capture_thread: false — it must not trip the Wayland guard on dev machines).
   - `BoundedDropOldest` cap 2 capture→controller (drop-oldest; eviction is producer-side, so the queue stays ≤2 under bursts).
   - Controller thread (owns `Ffmpeg`, writes stdin, restart on resolution change, EOF→wait→kill teardown); dedicated stdout reader thread per encoder generation — readers parse stdout into **whole fMP4 segments** (`Mp4Segmenter`, `screen/segments.rs`) and push them through a cap-8 drop-oldest queue that **never evicts the init segment**; forwarder thread pushes whole segments into the media server's live channel (cap 8, drop-newest on overflow: the in-hand segment is discarded whole, the init retried until room) and tears down the session when the consumer closes.
+  - Portal mode (Linux): `prepare_portal` runs the dance + spawns the PipeWire thread on the controller, `wait_for_format` polls the status channel against the teardown signals (100 ms ticks), any error cleans up (thread joined, session closed) before returning; `teardown_portal` stops the PipeWire thread → joins it → `portal.close(session)`; the controller surfaces format changes as encoder restarts (`EncoderTarget::Portal`) and PipeWire failures as `StreamError`.
   - **Lesson:** a fake encoder that forks background children survives SIGKILL of the shell and keeps the stdout/stderr pipes open forever — bridge `join()` hangs on the readers. Test fakes must kill their own children on stdin EOF.
   - **Lesson (ISS-009, byte-level drop corruption):** drop-oldest on *raw byte chunks* can slice a box mid-header — the receiver sees a truncated fMP4 and stalls or dies. Backpressure must operate on whole segments: the reader accumulates boxes (size≥8, largesize handled, 64 MiB cap, opaque fallback on a corrupt header, truncated tail at EOF dropped), so an overflow drop always discards an entire `moof`+`mdat` fragment and the wire never carries a partial box. A restart (resolution change) additionally clears the segment queue and joins the old readers *before* the new encoder starts, so the consumer sees exactly one init segment followed by complete fragments.
 - **Lesson (Phase 12):** POSIX 2.9.3.1 gives an *asynchronous list* (`cmd &`) a `/dev/null` stdin whenever job control is off — so `cat >/dev/null &` EOFs instantly, `wait $CPID` returns, and the emitter is killed before any chunk reaches the pipe. A fake encoder that relied on that pattern failed ~50% of `screen_pipeline_tests` runs (the emitter raced the kill). Fix: `exec 3<&0; cat >/dev/null <&3 &` — an explicit fd redirect overrides the implicit `/dev/null` assignment and `cat` then genuinely holds the stdin pipe until the bridge closes it (EOF → the script kills its own emitter → clean exit).
-- [x] **Tests:** `tests/screen_pipeline_tests.rs` (7: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown, slow-consumer whole-segment drops, restart emits a fresh init) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
-- [x] **Gate:** `cargo test --test screen_pipeline_tests --test screen_e2e` green.
+- [x] **Tests:** `tests/screen_pipeline_tests.rs` (9: EOF-before-exit, resolution restart, unexpected exit → StreamError, drop-oldest under a full pipe, client-disconnect teardown, slow-consumer whole-segment drops, restart emits a fresh init, **plus 2 Wayland portal-mode tests** — fake `ScreenCast` + fake PipeWire spawner through the real bridge, including the negotiation-failure path) + `tests/portal_tests.rs` (6: real `ZbusScreenCast` vs a fake portal over a zbus p2p socket pair — full dance + fd passing + session close, stale-response skip, canceled, rejected, abort, unknown-session error) + `tests/integration/screen_e2e.rs` (real ffmpeg: rawvideo feeder → bridge → HTTP, ftyp/moov asserted, skip when ffmpeg absent).
+- [x] **Gate:** `cargo test --test screen_pipeline_tests --test portal_tests --test screen_e2e` green.
 
 ### Phase 9 — GUI (`app.rs`) ← `02-gui.md`
 - [x] `CastDashboard` struct per spec §4.2.
@@ -464,7 +494,7 @@ acceptance criteria pass.
 - [x] **Tests:** state transitions for all `AppCommand` variants; URL validation; volume throttle timing; status-indicator updates from synthetic `BackendEvent`s.
 - [x] **Gate:** `cargo test --test gui_state_tests` green (33 tests); manual smoke test on each supported OS.
 
-> **Lessons recorded (Phase 9):** (1) **Spec §3.1 requires a retry action but §4.1's enum had no rescan command** — added `AppCommand::Rescan` to `state.rs` and the spec enum; Phase 10 must map it to an immediate mDNS re-query. (2) **eframe 0.36 changed the `App` trait** — `update` is gone; implement `ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)`, and panels are the unified `egui::Panel::left/top/bottom` with `exact_size(...)` (no more `SidePanel`/`TopBottomPanel`, no `resizable` on top/bottom by default). (3) **`futures_util::poll!` is `async`-only** (gated behind the `async-await` feature) — cannot be used on the GUI thread; poll the `rfd::AsyncFileDialog` future manually with `std::task::Waker::noop()` + `Context::from_waker`, re-polling every frame (`Pin<Box<dyn Future + Send>>` is `Unpin`, so `Pin::new(&mut *fut).poll(&mut cx)` works). (4) **Discovery Error state is driven by `BackendEvent::ConnectionError`** while the receiver list is empty — the Phase 2 contract surfaces fatal mDNS setup errors via `ConnectionError`. (5) Keep `futures-util` a dev-dependency only; the GUI needs no main-dep addition.
+> **Lessons recorded (Phase 9):** (1) **Spec §3.1 requires a retry action but §4.1's enum had no rescan command** — added `AppCommand::Rescan` to `state.rs` and the spec enum; Phase 10 must map it to an immediate mDNS re-query. (2) **eframe 0.36 changed the `App` trait** — `update` is gone; implement `ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)`, and panels are the unified `egui::Panel::left/top/bottom` with `exact_size(...)` (no more `SidePanel`/`TopBottomPanel`, no `resizable` on top/bottom by default). (3) **`futures_util::poll!` is `async`-only** (gated behind the `async-await` feature) — cannot be used on the GUI thread; poll the `rfd::AsyncFileDialog` future manually with `std::task::Waker::noop()` + `Context::from_waker`, re-polling every frame (`Pin<Box<dyn Future + Send>>` is `Unpin`, so `Pin::new(&mut *fut).poll(&mut cx)` works). (4) **Discovery Error state is driven by `BackendEvent::ConnectionError`** while the receiver list is empty — the Phase 2 contract surfaces fatal mDNS setup errors via `ConnectionError`. (5) `futures-util` was a dev-dependency only until the Wayland portal work moved it to main deps (`screen/portal.rs` needs `StreamExt` + `future::select`).
 
 ### Phase 10 — Runtime & supervisor (`runtime.rs`) ← `06-concurrency.md`
 - [x] Build `tokio::runtime::Runtime::new()` (multi-threaded).
@@ -515,6 +545,8 @@ acceptance criteria pass.
 
 > **Lessons recorded (Phase 13):** (1) **`url` 2.5.8 removed the `percent_encoding` re-export** — add `percent-encoding = "2"` directly. (2) **`smb2` pulls thiserror 2.x alongside our thiserror 1.x** (`cargo tree --duplicates` shows both); they are type-incompatible so never mix them in one module — `SmbError` stays a hand-rolled `thiserror 1` enum and wraps `smb2::Error` by value. (3) **`smb2::Error` is not `Clone`** (it holds `io::Error`), so `SmbError` cannot derive `Clone`; test fakes must not clone errors — the fake read-failure is a bool that builds a fresh error per read. (4) **Clippy's `question_mark` + inference:** `let result = match … { … Ok(()) }` then `result?;` is ambiguous under `-D warnings`; annotate `let result: io::Result<()> = match …`. (5) **`async fn` in trait impls is fine for RPITIT traits** — the lib desugars trait *declarations* to `impl Future + Send` (clippy `async_fn_in_trait`), but test *impls* may use plain `async fn` (clippy `manual_async_fn` demands it). (6) `split('\r\n')` yields a trailing empty element after the head terminator — response-head parsers in tests must filter empty lines or the last header panics.
 
+> **Lessons recorded (Wayland portal phase):** (1) **`MatchRule::path_namespace` requires a valid `ObjectPath`** — a trailing slash (`…/desktop/request/`) is rejected with `InvalidObjectPath`; the namespace must be the prefix without the final `/`. (2) **Options dicts must be `HashMap<String, Value>`** — an array of `(str, Value)` tuples serializes as `a(sv)` and a real portal rejects the signature; only `HashMap` emits `a{sv}`. (3) **The session handle is an `o`, not an `s`** — `create_session` returns it as a string, but every ScreenCast method wants an object path; parse it (`ObjectPath::try_from`) at each call site. (4) **Never wait for a payload key alone in `call_and_wait`** — a canceled dialog replies code 1 with an *empty* `results` dict; waiting for the expected key hangs forever. Accept `code != 0 || expect(...)` and map the code to `Canceled`/`Rejected`. (5) **The zbus `#[interface]` macro derives member names with plain `pascal_case`** — `open_pipewire_remote` becomes `OpenpipewireRemote` (lowercase w), but the real portal's member is `OpenPipeWireRemote`; the fake must set `#[zbus(name = "OpenPipeWireRemote")]`. (6) **The fake portal tests caught four real production bugs** (the four above) — the p2p socket-pair harness pays for itself; a fake that is *signature-faithful* is the point. (7) **`pipewire` 0.9.x, not 0.10.x** — two `pipewire-sys` versions conflict on `links = "pipewire-0.3"` (xcap pulls `pipewire ^0.9`); 0.9.2 unifies them. 0.9.2 API deltas vs 0.10: `pw::init()` returns `()`, `Context::connect_fd(fd, None)` (no `connect_fd_rc`), `Loop::iterate(Duration)` and `Loop::enter/leave` is `unsafe`-gated and unneeded, `StreamBox::connect(direction, id, flags, params: &mut [&Pod])`, `StreamState::Error(String)`, `property!` `Choice, Range` rule takes **no** trailing comma (Enum/Id rules do). (8) **The zbus builder for p2p is `zbus::connection::Builder`** (no `Connection::builder`), and both ends of the socket pair must build **concurrently** (`futures_util::try_join!`) because the SASL handshake needs both sides live — zbus's own tests do the same. (9) **`start_with_encoder` must not spawn the xcap capture thread** — the harness feeds frames itself, and on a Wayland dev machine `start_capture`'s Wayland guard made every pipeline test fail; `PipelineInput::Frames` gained an explicit `capture_thread` flag (`false` for the harness, `true` from `ScreenBridge::start`). (10) **Keep the fake portal connection alive in the test scope** — the ObjectServer dispatcher runs on the async-io reactor, and dropping the `Connection` handle kills the socket (the fd-passing and session-close assertions silently stop working).
+
 ---
 
 ## 7. Coding conventions for agents
@@ -547,7 +579,7 @@ acceptance criteria pass.
 | `cast/request_id.rs`, `cast/namespaces.rs` | `03-cast-engine.md` §6 |
 | `cast/connection/` (facade + transport/reader/writer/state_machine/teardown) | `03-cast-engine.md` §7 |
 | `media/*` | `04-media-proxy.md` |
-| `screen/*` | `05-screen-capture.md` |
+| `screen/*` | `05-screen-capture.md` (portal.rs/pipewire.rs: §3.4) |
 | `runtime.rs`, `util/shutdown.rs` | `06-concurrency.md` |
 | `rust-toolchain.toml`, `deny.toml`, CI | `01-architecture.md` §8–9 |
 | Acceptance criteria & test matrix | `07-requirements-and-tests.md` |

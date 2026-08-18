@@ -8,4 +8,8 @@ pub mod bridge;
 pub mod capture;
 pub mod ffmpeg;
 pub mod ffmpeg_discover;
+#[cfg(target_os = "linux")]
+pub mod pipewire;
+#[cfg(target_os = "linux")]
+pub mod portal;
 pub mod segments;

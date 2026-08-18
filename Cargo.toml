@@ -43,12 +43,32 @@ percent-encoding = "2"
 # Empty username/password = guest; the crate exposes ErrorKind::AuthRequired so
 # authentication-required shares fail explicitly instead of prompting.
 smb2 = "0.18"
+# Stream utilities for the portal client's response wait (`screen/portal.rs`):
+# zbus's `MessageStream` needs `TryStreamExt`, and the abort race needs
+# `future::select`.
+futures-util = "0.3"
+
+# Linux-only Wayland screen capture (`05-screen-capture.md` §3.4): the
+# xdg-desktop-portal ScreenCast D-Bus interface (pure-Rust zbus) plus the
+# official freedesktop PipeWire client that consumes the portal's stream fd
+# in-process — stock FFmpeg has no PipeWire input device, so frames are
+# copied out of PipeWire buffers and fed to the `ffmpeg` child as rawvideo,
+# exactly like the X11 path. async-io drives the zbus futures on the
+# controller `std::thread` (`zbus::block_on` is `#[doc(hidden)]`).
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.9"
+# 5.13.x is the last line with MSRV ≤ 1.85 (5.19 requires rustc 1.87).
+# `p2p` (not in defaults) powers the fake-portal socket-pair tests.
+zbus = { version = ">=5.13, <5.14", features = ["p2p"] }
+# The proc-macro crate must stay in lockstep with the zbus lib: 5.19's macros
+# emit code referencing `object_server::DispatchResult2`, which 5.13 lacks.
+zbus_macros = ">=5.13, <5.14"
+async-io = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
 rcgen = "0.14.7"
 tokio-test = "0.4"
-futures-util = "0.3"
 
 # Cross-platform fake encoder for `tests/screen_pipeline_tests.rs` (ISS-012):
 # a compiled binary replaces the Unix-only `/bin/sh` fake-encoder scripts so
@@ -66,6 +86,12 @@ path = "tests/integration/http_e2e.rs"
 [[test]]
 name = "screen_e2e"
 path = "tests/integration/screen_e2e.rs"
+
+# Linux-only: portal client against a fake xdg-desktop-portal over a zbus
+# p2p socket pair (`05-screen-capture.md` §3.4). Empty on other platforms.
+[[test]]
+name = "portal_tests"
+path = "tests/portal_tests.rs"
 
 # Feature-gated: empty unless `--features e2e-cast` (see `[features]`).
 [[test]]
