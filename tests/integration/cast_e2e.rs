@@ -359,8 +359,11 @@ async fn launch_load_local_file_then_transport_controls() {
     eprintln!("loading local file via {url}");
 
     let (events_tx, events_rx) = mpsc::unbounded_channel();
-    let (conn, handle) =
-        CastConnection::start_with_handle(events_tx, server.shutdown.clone(), TlsConnector);
+    let (conn, handle) = CastConnection::start_with_handle(
+        events_tx,
+        server.shutdown.clone(),
+        TlsConnector::default(),
+    );
     let mut events = EventCollector::new(events_rx);
 
     // Select → Connected (TLS + CONNECT done).
@@ -501,8 +504,11 @@ async fn load_remote_url_through_the_local_proxy() {
     eprintln!("proxying {origin_url} via {url}");
 
     let (events_tx, events_rx) = mpsc::unbounded_channel();
-    let (conn, handle) =
-        CastConnection::start_with_handle(events_tx, proxy.shutdown.clone(), TlsConnector);
+    let (conn, handle) = CastConnection::start_with_handle(
+        events_tx,
+        proxy.shutdown.clone(),
+        TlsConnector::default(),
+    );
     let mut events = EventCollector::new(events_rx);
 
     conn.select(device.clone());
