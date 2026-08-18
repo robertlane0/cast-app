@@ -19,7 +19,7 @@
 | `specs/01-07-*.md` | full production specification set (architecture, GUI, cast engine, media proxy, screen capture, concurrency, requirements/tests); all acceptance-criteria checkboxes checked |
 | `LICENSE-MIT`, `LICENSE-APACHE` | dual MIT/Apache-2.0, © 2026 Robert Lane |
 | `.gitignore` | standard Rust |
-| Implementation status | Phases 0–12 complete; only the manual per-OS verification runs (Phase 12, §10, §11) remain, as they require physical Chromecasts |
+| Implementation status | Phases 0–13 complete; only the manual per-OS verification runs (Phase 12, §10, §11) remain, as they require physical Chromecasts |
 
 Target (achieved): a zero-unsafe Rust desktop app that discovers Chromecast
 receivers, streams local files / remote URLs / anonymous network shares
@@ -289,6 +289,7 @@ tests/
   dns_parser_tests.rs
   protobuf_tests.rs
   framing_tests.rs
+  flush_tests.rs         # FlushTracker byte/time flush cadence for streaming handlers
   range_tests.rs
   mime_tests.rs
   lan_ip_tests.rs

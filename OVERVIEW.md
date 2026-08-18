@@ -122,7 +122,7 @@ Achieving cross-platform screen capture and H.264 video encoding without `unsafe
 
 To strictly enforce `#![forbid(unsafe_code)]`, we adopt a highly efficient **Subprocess Pipelining** architecture:
 
-1. **Safe Capture:** We utilize a 100% safe Rust capture crate (like `xcap`) to grab RGBA byte frames of the selected monitor in a loop.
+1. **Safe Capture:** We utilize a 100% safe Rust capture crate (like `xcap`) to grab RGBA byte frames of the selected monitor in a loop. On Linux Wayland sessions, `xcap` is not usable; the app instead runs the xdg-desktop-portal **ScreenCast** D-Bus dance (pure-Rust `zbus`) to obtain a PipeWire stream fd and reads frames with an in-process pure-Rust PipeWire client (`screen/portal.rs`, `screen/pipewire.rs`) — the negotiated pixel format is fed straight to `ffmpeg`, no conversion. A virtual `Screen` entry replaces the monitor list there.
 2. **Child Process Encoder:** We spawn an `ffmpeg` child process via `std::process::Command`, configured to accept raw RGBA video from `stdin` and output an fMP4 (Fragmented MP4) stream to `stdout`.
 ```rust
 let mut ffmpeg = Command::new("ffmpeg")
@@ -160,6 +160,6 @@ The application strictly divides CPU-bound and IO-bound tasks:
 * *Task C:* The HTTP Proxy listener serving media.
 
 
-* **Screen Capture Thread:** A dedicated standard thread (`std::thread::spawn`) dedicated to polling the display buffer (since OS capture APIs can sometimes block) and feeding the Tokio HTTP pipeline via channels.
+* **Screen Capture Thread:** A dedicated standard thread (`std::thread::spawn`) dedicated to polling the display buffer (since OS capture APIs can sometimes block) and feeding the Tokio HTTP pipeline via channels. On Wayland, a second dedicated thread drives the PipeWire loop; the portal dance itself runs on the pipeline's controller thread (a pending share dialog must never block the GUI or the Tokio runtime).
 
 This architecture creates a robust, highly modular Google Cast desktop application entirely from scratch. By wrapping Protobuf and mDNS manually and utilizing standard HTTP/subprocess streams for media, the application drastically minimizes dependency bloat while proving the capability of zero-unsafe Rust.

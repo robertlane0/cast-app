@@ -26,8 +26,10 @@ canonical implementation guide.
   proxying, anonymous SMB share serving (`smb://host/share/file`, guest logon
   only — shares requiring authentication fail with `401`), LAN-IP
   advertisement, configurable port
-- Screen capture (X11/macOS/Windows) piped to `ffmpeg` as raw RGBA, H.264
-  fragmented MP4 streamed live (`video/mp4`)
+- Screen capture (X11/macOS/Windows via `xcap`, Wayland via the
+  xdg-desktop-portal ScreenCast interface + an in-process PipeWire client)
+  piped to `ffmpeg` as raw video, H.264 fragmented MP4 streamed live
+  (`video/mp4`)
 - Play / Pause / Stop / volume / mute controls
 
 ## Platform support
@@ -35,7 +37,7 @@ canonical implementation guide.
 | OS | Status | Screen capture |
 |---|---|---|
 | Linux (X11) | supported | yes |
-| Linux (Wayland) | supported | no — disabled on Wayland (error in the log; monitor list stays empty) |
+| Linux (Wayland) | supported | yes — via xdg-desktop-portal ScreenCast + in-process PipeWire client (a single virtual `Screen` display; requires `ffmpeg` and a portal-backed session) |
 | Windows 10/11 | supported | yes |
 | macOS 13+ | supported | yes |
 
@@ -56,8 +58,10 @@ sudo apt install ffmpeg
 ```
 
 Other distributions: use the native package manager (`dnf install ffmpeg`,
-`pacman -S ffmpeg`, `apk add ffmpeg`, …). X11 session required for screen
-capture; on Wayland, capture is disabled by design (see platform table).
+`pacman -S ffmpeg`, `apk add ffmpeg`, …). On Wayland, screen capture also
+needs an xdg-desktop-portal backend (e.g. `xdg-desktop-portal-gnome` or
+`xdg-desktop-portal-kde`); a portal-less session disables the Display source
+(see platform table).
 
 ### Windows
 
@@ -144,7 +148,7 @@ src/
   util/          shutdown token, retry backoff, drop-oldest channels
   cast/          mDNS, TLS, framing, hand-rolled protobuf, connection state machine
   media/         HTTP proxy: local files, URL proxy, SMB shares, Range, MIME, LAN IP
-  screen/        xcap capture thread, ffmpeg subprocess, capture→ffmpeg→HTTP bridge
+  screen/        xcap capture thread, Wayland portal/PipeWire client, ffmpeg subprocess, capture→ffmpeg→HTTP bridge
 tests/
   unit + integration test suites (incl. feature-gated `cast_e2e`)
 xtask/           unsafe-scan binary (CI gate)
