@@ -207,9 +207,9 @@ fn default_store_path() -> PathBuf {
     if let Some(base) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(base).join("cast-app").join(PIN_FILE_NAME);
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        if home.join("Library").is_dir() {
+    if cfg!(target_os = "macos") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
             return home
                 .join("Library")
                 .join("Application Support")

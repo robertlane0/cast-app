@@ -120,8 +120,8 @@ fn platform_log_dir() -> PathBuf {
     if let Some(base) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(base).join("cast-app").join("logs");
     }
-    if let Some(home) = home_dir() {
-        if home.join("Library").is_dir() {
+    if cfg!(target_os = "macos") {
+        if let Some(home) = home_dir() {
             return home.join("Library").join("Logs").join("cast-app");
         }
     }
