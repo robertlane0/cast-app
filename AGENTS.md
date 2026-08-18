@@ -263,10 +263,10 @@ src/
     writer.rs          # framed send_payload on spawn_blocking workers
     state_machine.rs   # Phase/Command/events, inbound routing, run loop, reconnect policy
     teardown.rs        # STOP → STOP_APP → close_notify ordering
-  media/
+media/
     mod.rs
     flush.rs             # FlushTracker: bounded byte/time flush cadence for streaming handlers
-    server.rs            # tokio TcpListener HTTP/1.1 server
+    server.rs            # tokio TcpListener bound to the receiver's resolved interface (wildcard 0.0.0.0 only after user consent); HTTP/1.1, /stream routing, SetBindAddr/SetPort rebinds
     range.rs             # Range parser + Content-Range builder
     mime.rs              # extension -> MIME map
     lan_ip.rs            # LAN IP selection (subnet -> default route -> loopback)
@@ -445,7 +445,7 @@ acceptance criteria pass.
 - [x] `mime.rs`: extension map (mp4/webm/mkv/mov/mp3/aac/m4a/flac/wav; default `application/octet-stream`).
 - [x] `range.rs`: parse `bytes=a-b`, `bytes=a-`, `bytes=-suffix`; build `Content-Range`; classify as valid/invalid/multi/none.
 - [x] `lan_ip.rs`: enumerate non-loopback IPv4 interfaces; match subnet containing receiver IP; fallback to default-route interface; fallback to `127.0.0.1` with `warn!`. Re-run on receiver change.
-- [x] `server.rs`: tokio `TcpListener` on `0.0.0.0:8080` (configurable); HTTP/1.1 request line + headers; GET/HEAD only (else 405); route `/stream` only (else 404); rebind on `SetProxyPort`.
+- [x] `server.rs`: tokio `TcpListener` bound to the interface address resolved for the selected receiver (`set_bind_addr`; rebind on receiver change, keeps the bind address on `SetProxyPort`); the app path starts **unbound** and the `0.0.0.0` wildcard is used only after an explicit user consent pop-up (`BindFallbackRequested`/`BindFallback`); the old listener is dropped before a rebind (same-port rebinds from the wildcard would otherwise hit `EADDRINUSE`); a failed bind is acked back and leaves the server unbound; HTTP/1.1 request line + headers; GET/HEAD only (else 405); route `/stream` only (else 404); `SetPort` is a no-op while unbound.
 - [x] `local_file.rs`: open `tokio::fs::File`; 200 (full) / 206 (single range) / 416 (unsatisfiable); 64 KiB chunks; `Accept-Ranges`, `Content-Type`, `Content-Length`, `Cache-Control: no-cache`; HEAD = headers only.
 - [x] `url_proxy.rs`: `reqwest::Client` with rustls-tls; reject userinfo URLs; forward `Range`; up to 5 redirects; 30s first-byte timeout; no overall timeout while streaming; pass through non-2xx status + body; 502 on connection failure.
 - [x] `source.rs`: `ActiveSource { File(PathBuf) | Url(String) | Screen(monitor_name) }`; switching terminates in-flight connection via per-connection cancellation token.
@@ -661,14 +661,14 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 - **TLS:** rustls 0.23 requires you to explicitly select a crypto provider (`rustls::crypto::ring::default_provider().install_default()` once at startup).
 - **Protobuf:** the length prefix is part of the **framing**, not the protobuf payload. Encode payload → measure → prepend 4-byte BE length.
 - **Heartbeat:** PONG must reset the watchdog, not just be received. If you only set "received any message" you'll miss silent heartbeat failures.
-- **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416).
-- **Flush cadence:** never flush per chunk in streaming handlers — it defeats the `BufWriter` and burns a syscall per chunk. Use `FlushTracker` with per-handler byte/time thresholds (`url_proxy.rs` `FLUSH_BYTES`/`FLUSH_INTERVAL` = 32 KiB/25 ms; `server.rs` live-screen = 64 KiB/50 ms), flush the response head immediately, and always flush the tail before a close-delimited stream ends.
+- **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416). never flush per chunk in streaming handlers — it defeats the `BufWriter` and burns a syscall per chunk. Use `FlushTracker` with per-handler byte/time thresholds (`url_proxy.rs` `FLUSH_BYTES`/`FLUSH_INTERVAL` = 32 KiB/25 ms; `server.rs` live-screen = 64 KiB/50 ms), flush the response head immediately, and always flush the tail before a close-delimited stream ends.
 - **URL proxy:** do **not** forward the Chromecast's `User-Agent` or `Host` headers upstream — they will break remote CDNs.
 - **SMB (`04-media-proxy.md` §4.4):** anonymous-only by construction — the parsed `SmbUrl` type has no credential fields, so no code path can ever present credentials. `smb2`'s `Error` is not `Clone`, so never derive `Clone` on wrappers around it and never clone errors in fakes. A guest-logon rejection is `ErrorKind::AuthRequired` and is permanent (401), not a signal to retry with credentials. `split('\r\n')` on a response head yields a trailing empty line — filter it or the last header parse panics.
 - **Screen capture:** the pinned `xcap` 0.9.6 was verified at implementation time to return **RGBA on Linux X11, macOS, and Windows** — no conversion runs in the capture loop (`XCAP_FRAMES_ARE_RGBA = true`). Do not trust that forever: re-verify against the pinned version when upgrading `xcap`, and keep the unit-tested `bgra_to_rgba` fallback (and `-pix_fmt rgba` in the ffmpeg args) as the safety net.
 - **`xcap::Monitor` is `!Send` on Windows:** it wraps an `HMONITOR` (`*mut c_void`), so a `FrameSource` holding it cannot cross into a spawned thread. Construct the source *inside* the capture thread and move only the monitor *name* (`String`) across; `FrameSource` must not be `Send`-bounded. A second Windows-only trap: a `connect()` to a closed loopback port can report success at the socket layer with the refusal arriving later — tests must accept `ConnectTimeout` alongside `TlsError::Connect`.
 - **fMP4:** if the receiver stalls at "Buffering" forever, add `default_base_moof` to `-movflags` and re-test. Record the working flag set in code.
 - **Shutdown ordering:** drop the HTTP listener **first** so no new `/stream` connections arrive while the Cast connection is tearing down; otherwise the Chromecast may retry the URL mid-teardown.
+- **Media-server binding:** the listener binds the receiver's resolved interface; rebinding from `0.0.0.0` to a specific address on the same port requires dropping the old listener **before** binding, or Linux returns `EADDRINUSE`. A failed interface bind leaves the server unbound (no stale listener) and is acked back so the runtime can request the user-consented wildcard fallback (`BindFallbackRequested`/`BindFallback`); the wildcard bind only ever happens after that consent (once per session). The GUI-to-backend event types for consent live in `state.rs`; runtime tests that exercise startup must answer the consent event (or the wildcard stays unbound and Play's advertised port is 0).
 - **Tokio + std::thread:** the capture thread is `std::thread`, not a tokio task. Bridge into tokio via a `tokio::sync::mpsc::Sender` created with `unbounded_channel` (or bounded per §7) and `tokio::runtime::Handle::current()` captured before spawn.
 
 ---

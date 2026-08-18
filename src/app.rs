@@ -124,6 +124,10 @@ pub struct CastDashboard {
     volume_throttle: VolumeThrottle,
     volume_dragging: bool,
     error_banner: Option<String>,
+    /// Outstanding `BindFallbackRequested` prompt: the reason the backend
+    /// wants to bind the media server to `0.0.0.0` (`04-media-proxy.md` §1.1).
+    /// `Some` while the consent modal is open.
+    bind_fallback: Option<String>,
     has_active_source: bool,
     ffmpeg_available: bool,
     selected_display: Option<String>,
@@ -161,6 +165,7 @@ impl CastDashboard {
             volume_throttle: VolumeThrottle::new(),
             volume_dragging: false,
             error_banner: None,
+            bind_fallback: None,
             has_active_source: false,
             ffmpeg_available: ffmpeg_discover::ffmpeg_available(),
             selected_display: None,
@@ -243,6 +248,11 @@ impl CastDashboard {
                 }
                 self.muted = muted;
                 self.dismiss_error();
+            }
+            BackendEvent::BindFallbackRequested(reason) => {
+                // Open (or refresh) the consent modal; the answer dispatches
+                // `AppCommand::BindFallback` (`04-media-proxy.md` §1.1).
+                self.bind_fallback = Some(reason);
             }
         }
     }
@@ -330,6 +340,14 @@ impl CastDashboard {
         self.proxy_port = port;
         self.port_draft = port;
         self.dispatch(AppCommand::SetProxyPort(port));
+    }
+
+    /// Answer the wildcard-bind consent prompt and dispatch `BindFallback`
+    /// (`04-media-proxy.md` §1.1). `true` allows the media server to bind
+    /// `0.0.0.0` (all interfaces) as a fallback.
+    pub fn answer_bind_fallback(&mut self, consent: bool) {
+        self.bind_fallback = None;
+        self.dispatch(AppCommand::BindFallback(consent));
     }
 
     // -----------------------------------------------------------------------
@@ -503,6 +521,12 @@ impl CastDashboard {
 
     pub fn error_banner(&self) -> Option<&str> {
         self.error_banner.as_deref()
+    }
+
+    /// The outstanding wildcard-bind consent prompt, if any
+    /// (`04-media-proxy.md` §1.1).
+    pub fn bind_fallback_prompt(&self) -> Option<&str> {
+        self.bind_fallback.as_deref()
     }
 
     pub fn proxy_port(&self) -> u16 {
@@ -792,6 +816,36 @@ impl CastDashboard {
             }
         });
     }
+
+    /// Consent modal for the `0.0.0.0` wildcard media-server bind
+    /// (`04-media-proxy.md` §1.1): explains what failed (or why the
+    /// interface cannot be determined yet), why the app wants the fallback,
+    /// and the exposure it creates — reachable from every interface of the
+    /// machine, including VPN tunnels and virtual adapters.
+    fn bind_fallback_window(&mut self, ui: &mut egui::Ui, reason: &str) {
+        ui.set_min_width(480.0);
+        ui.heading("Bind the media server to all interfaces?");
+        ui.add_space(8.0);
+        ui.label(reason);
+        ui.add_space(8.0);
+        ui.label(
+            "Normally the media server binds only the network interface used to reach the \
+             selected Chromecast, so only devices on that LAN segment can access the stream. \
+             While bound to 0.0.0.0, any device that can reach this computer can fetch \
+             /stream — devices on the LAN, other Wi-Fi networks, and any VPN tunnel or \
+             virtual adapter. With a VPN active, the tunnel interface is part of that \
+             exposure.",
+        );
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui.button("Yes, bind all interfaces").clicked() {
+                self.answer_bind_fallback(true);
+            }
+            if ui.button("No, keep restricted binding").clicked() {
+                self.answer_bind_fallback(false);
+            }
+        });
+    }
 }
 
 impl eframe::App for CastDashboard {
@@ -826,6 +880,11 @@ impl eframe::App for CastDashboard {
         if self.settings_open {
             egui::Modal::new(egui::Id::new("settings"))
                 .show(ui.ctx(), |ui| self.settings_window(ui));
+        }
+
+        if let Some(reason) = self.bind_fallback.clone() {
+            egui::Modal::new(egui::Id::new("bind_fallback"))
+                .show(ui.ctx(), |ui| self.bind_fallback_window(ui, &reason));
         }
 
         self.poll_file_picker(ui.ctx());

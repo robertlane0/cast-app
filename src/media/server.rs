@@ -2,11 +2,18 @@
 //! The local HTTP/1.1 media server (`04-media-proxy.md` §2): async accept
 //! loop, request-line + header parsing, `/stream` routing, per-source
 //! serving (file / URL proxy / live screen), source-switch cancellation of
-//! in-flight connections, and port rebinding.
+//! in-flight connections, and address/port rebinding.
+//!
+//! The listener binds a specific interface address (the interface resolved
+//! for the current receiver, `04-media-proxy.md` §1.1), never the wildcard
+//! on its own: the app path starts unbound and the runtime drives every bind
+//! via [`MediaServer::set_bind_addr`], falling back to `0.0.0.0` only after
+//! explicit user consent. The legacy [`MediaServer::start`] constructor
+//! (wildcard at spawn) exists for standalone tests.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -54,8 +61,17 @@ pub enum ServerCommand {
     SetSource(ActiveSource),
     /// Attach the live screen-encoder byte stream (Phase 8 bridge output).
     AttachScreenStream(mpsc::Receiver<Vec<u8>>),
-    /// Rebind the listener to a new port (`04-media-proxy.md` §1.1).
+    /// Rebind the listener to the current bind address on `port`
+    /// (`04-media-proxy.md` §1.1). No-op (with a warning) while the server
+    /// is unbound — a bind address must be configured first.
     SetPort(u16),
+    /// Rebind the listener to `addr` — the interface address resolved for
+    /// the current receiver, or `0.0.0.0` after explicit user consent. The
+    /// old listener is dropped before the new bind (a same-port rebind from
+    /// the wildcard to a specific address would otherwise hit `EADDRINUSE`);
+    /// a failed bind is reported through the ack and leaves the server
+    /// unbound.
+    SetBindAddr(SocketAddr, tokio::sync::oneshot::Sender<io::Result<()>>),
     /// Stop the server task.
     Shutdown,
 }
@@ -72,21 +88,50 @@ pub struct MediaServer {
 
 impl MediaServer {
     /// Spawn the media-server task on the current tokio runtime, binding
-    /// `port` (`04-media-proxy.md` §2; port 0 picks an ephemeral port).
+    /// `port` on the wildcard address (`04-media-proxy.md` §2; port 0 picks
+    /// an ephemeral port). Test/standalone constructor: the app path uses
+    /// [`MediaServer::start_unbound_with_handle`] so the runtime can gate
+    /// every bind on user consent (`04-media-proxy.md` §1.1).
     pub fn start(shutdown: Shutdown, port: u16) -> Self {
         Self::start_with_handle(shutdown, port).0
     }
 
     /// Spawn the media-server task, returning the task handle so the runtime
-    /// supervisor can await listener release during shutdown.
+    /// supervisor can await listener release during shutdown. Binds the
+    /// wildcard address immediately (test/standalone constructor).
     pub fn start_with_handle(shutdown: Shutdown, port: u16) -> (Self, tokio::task::JoinHandle<()>) {
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let (port_tx, bound_port) = watch::channel(0);
+        let (generation_tx, _) = watch::channel(0u64);
+        let initial = (IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
+        let handle = tokio::spawn(run(
+            receiver,
+            shutdown,
+            Some(initial),
+            port_tx,
+            generation_tx.clone(),
+        ));
+        (
+            Self {
+                commands,
+                bound_port,
+                generation: generation_tx,
+            },
+            handle,
+        )
+    }
+
+    /// Spawn the media-server task with **no listener**. Every bind is
+    /// driven by [`MediaServer::set_bind_addr`]; `bound_port()` stays 0 and
+    /// `SetPort` is a no-op until the first bind address is configured.
+    pub fn start_unbound_with_handle(shutdown: Shutdown) -> (Self, tokio::task::JoinHandle<()>) {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (port_tx, bound_port) = watch::channel(0);
         let (generation_tx, _) = watch::channel(0u64);
         let handle = tokio::spawn(run(
             receiver,
             shutdown,
-            port,
+            None,
             port_tx,
             generation_tx.clone(),
         ));
@@ -115,9 +160,25 @@ impl MediaServer {
     }
 
     /// Rebind the listener to `port` (`04-media-proxy.md` §1.1). A failed
-    /// bind keeps the current listener and logs a warning.
+    /// bind keeps the current listener and logs a warning. While the server
+    /// is unbound (no bind address configured yet) this is a no-op.
     pub fn set_port(&self, port: u16) {
         let _ = self.commands.send(ServerCommand::SetPort(port));
+    }
+
+    /// Rebind the listener to `addr` — the interface address resolved for
+    /// the current receiver, or the wildcard `0.0.0.0` after explicit user
+    /// consent (`04-media-proxy.md` §1.1). Non-blocking: the result is
+    /// reported through `ack` once the server task has processed the
+    /// command. The old listener is dropped before the new bind (the same
+    /// port on a specific address conflicts with a wildcard listener), so a
+    /// failed rebind leaves the server without a listener.
+    pub fn set_bind_addr(
+        &self,
+        addr: SocketAddr,
+        ack: tokio::sync::oneshot::Sender<io::Result<()>>,
+    ) {
+        let _ = self.commands.send(ServerCommand::SetBindAddr(addr, ack));
     }
 
     /// Stop the server task and release the listener.
@@ -147,10 +208,13 @@ impl MediaServer {
 
 /// The media-server task: owns the listener and the current source; bumps a
 /// generation watch on every source switch so in-flight handlers abort.
+/// `initial_bind` is the startup listener address (`None` = start unbound;
+/// the runtime then drives every bind through `SetBindAddr`, gating the
+/// wildcard fallback on user consent, `04-media-proxy.md` §1.1).
 async fn run(
     mut commands: mpsc::UnboundedReceiver<ServerCommand>,
     shutdown: Shutdown,
-    initial_port: u16,
+    initial_bind: Option<(IpAddr, u16)>,
     port_tx: watch::Sender<u16>,
     generation_tx: watch::Sender<u64>,
 ) {
@@ -168,21 +232,28 @@ async fn run(
 
     let live_rx: Arc<Mutex<Option<mpsc::Receiver<Vec<u8>>>>> = Arc::new(Mutex::new(None));
 
-    let mut listener = match bind(initial_port).await {
-        Ok(listener) => {
-            // Report the actual bound port (differs from `initial_port` when
-            // an ephemeral port (0) was requested).
-            let actual = listener
-                .local_addr()
-                .map(|addr| addr.port())
-                .unwrap_or(initial_port);
-            let _ = port_tx.send(actual);
-            Some(listener)
-        }
-        Err(error) => {
-            tracing::error!(port = initial_port, %error, "media server failed to bind; waiting for SetPort");
-            None
-        }
+    // The interface address the listener is bound to; `None` until the
+    // first `SetBindAddr`, so a `SetPort` cannot create a wildcard listener
+    // behind the runtime's back.
+    let mut bind_ip: Option<IpAddr> = initial_bind.map(|(ip, _)| ip);
+    let mut listener = match initial_bind {
+        Some((ip, port)) => match bind(ip, port).await {
+            Ok(listener) => {
+                // Report the actual bound port (differs from `port` when an
+                // ephemeral port (0) was requested).
+                let actual = listener
+                    .local_addr()
+                    .map(|addr| addr.port())
+                    .unwrap_or(port);
+                let _ = port_tx.send(actual);
+                Some(listener)
+            }
+            Err(error) => {
+                tracing::error!(port, %error, "media server failed to bind; waiting for SetBindAddr");
+                None
+            }
+        },
+        None => None,
     };
 
     let mut current: Option<ActiveSource> = None;
@@ -208,16 +279,46 @@ async fn run(
                         // in-flight live connection re-subscribes cleanly).
                         generation_tx.send_modify(|generation| *generation += 1);
                     }
-                    ServerCommand::SetPort(port) => match bind(port).await {
-                        Ok(new_listener) => {
-                            listener = Some(new_listener);
-                            let _ = port_tx.send(port);
-                            tracing::info!(port, "media server rebound");
+                    ServerCommand::SetPort(port) => {
+                        let Some(ip) = bind_ip else {
+                            tracing::warn!(port, "media server has no bind address; SetPort ignored (SetBindAddr first)");
+                            continue;
+                        };
+                        match bind(ip, port).await {
+                            Ok(new_listener) => {
+                                listener = Some(new_listener);
+                                let _ = port_tx.send(port);
+                                tracing::info!(port, "media server rebound");
+                            }
+                            Err(error) => {
+                                tracing::warn!(port, %error, "media server rebind failed; keeping current listener");
+                            }
                         }
-                        Err(error) => {
-                            tracing::warn!(port, %error, "media server rebind failed; keeping current listener");
+                    }
+                    ServerCommand::SetBindAddr(addr, ack) => {
+                        // Drop the current listener first: rebinding the
+                        // same port from the wildcard to a specific address
+                        // (or vice versa) conflicts while the old listener
+                        // holds it.
+                        listener = None;
+                        match bind(addr.ip(), addr.port()).await {
+                            Ok(new_listener) => {
+                                let actual = new_listener
+                                    .local_addr()
+                                    .map(|local| local.port())
+                                    .unwrap_or(addr.port());
+                                bind_ip = Some(addr.ip());
+                                listener = Some(new_listener);
+                                let _ = port_tx.send(actual);
+                                tracing::info!(%addr, "media server bound");
+                                let _ = ack.send(Ok(()));
+                            }
+                            Err(error) => {
+                                tracing::warn!(%addr, %error, "media server bind failed; no listener");
+                                let _ = ack.send(Err(error));
+                            }
                         }
-                    },
+                    }
                 }
             }
             accepted = accept(&mut listener), if listener.is_some() => {
@@ -252,10 +353,10 @@ fn lock(
     }
 }
 
-async fn bind(port: u16) -> io::Result<TcpListener> {
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+async fn bind(ip: IpAddr, port: u16) -> io::Result<TcpListener> {
+    let listener = TcpListener::bind((ip, port)).await?;
     let local = listener.local_addr()?;
-    tracing::info!(port = local.port(), "media server listening on 0.0.0.0");
+    tracing::info!(ip = %local.ip(), port = local.port(), "media server listening");
     Ok(listener)
 }
 

@@ -7,12 +7,12 @@
 //! ffmpeg killed; AGENTS.md §10).
 
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 use crate::cast::connection::{CastConnection, ConnectionEvent, Connector, TlsConnector};
 use crate::cast::mdns;
@@ -125,6 +125,17 @@ struct SupervisorState {
     /// LAN IP used for the advertised `/stream` URL (`04-media-proxy.md`
     /// §1.1); re-selected when the receiver selection changes.
     lan_ip: IpAddr,
+    /// The configured proxy port (default `8080`; `0` = ephemeral in tests).
+    /// Rebind targets use this port.
+    proxy_port: u16,
+    /// Whether the user has explicitly allowed the `0.0.0.0` wildcard bind
+    /// (`04-media-proxy.md` §1.1). Latches for the session once granted;
+    /// before that, every wildcard fallback asks via
+    /// `BackendEvent::BindFallbackRequested`.
+    wildcard_consented: bool,
+    /// A consent request is outstanding; no new request is sent until the
+    /// user answers (`AppCommand::BindFallback`).
+    fallback_pending: bool,
     /// The source the next `Play` loads (`04-media-proxy.md` §1.2).
     current_source: Option<ActiveSource>,
     last_volume: f32,
@@ -136,9 +147,23 @@ impl SupervisorState {
         match command {
             AppCommand::SelectReceiver(device) => {
                 // LAN IP re-selection on receiver change (`04-media-proxy.md`
-                // §1.1): the advertised URL must be reachable by the receiver.
+                // §1.1): the advertised URL must be reachable by the receiver,
+                // and the listener rebinds to the resolved interface so the
+                // exposure stays limited to the receiver's LAN segment.
                 self.lan_ip = lan_ip::select_lan_ip(Some(device.addr.ip()));
                 self.cast.select(device);
+                self.rebind_to_lan_ip().await;
+            }
+            AppCommand::BindFallback(consent) => {
+                self.fallback_pending = false;
+                if consent {
+                    self.wildcard_consented = true;
+                    self.bind_wildcard().await;
+                } else {
+                    tracing::warn!(
+                        "user declined the wildcard media-server bind; no listener until a receiver's interface binds"
+                    );
+                }
             }
             AppCommand::SelectSource(tab) => {
                 // Tab switches are GUI-side enablement; re-enumerate displays
@@ -229,7 +254,10 @@ impl SupervisorState {
                 self.muted = muted;
                 self.cast.set_volume(self.last_volume, muted);
             }
-            AppCommand::SetProxyPort(port) => self.server.set_port(port),
+            AppCommand::SetProxyPort(port) => {
+                self.proxy_port = port;
+                self.server.set_port(port);
+            }
             AppCommand::Rescan => {
                 // Immediate mDNS re-query (GUI Error-state retry, `02-gui.md`
                 // §3.1). Multiple bumps coalesce inside the watch. Note:
@@ -260,6 +288,61 @@ impl SupervisorState {
                 }
             }
         }
+    }
+
+    /// Bind the listener to the interface address resolved for the current
+    /// receiver (`04-media-proxy.md` §1.1), tightening exposure to the
+    /// receiver's LAN segment. When that bind fails, fall back to `0.0.0.0`
+    /// — directly if the user already consented this session, otherwise by
+    /// asking via `BackendEvent::BindFallbackRequested`.
+    async fn rebind_to_lan_ip(&mut self) {
+        let addr = SocketAddr::new(self.lan_ip, self.proxy_port);
+        if self.bind_addr(addr).await.is_ok() {
+            return;
+        }
+        if self.wildcard_consented {
+            self.bind_wildcard().await;
+        } else {
+            self.request_wildcard_fallback(format!(
+                "Binding the media server to {addr} failed, so the Chromecast could not reach the stream. The app wants to fall back to binding all interfaces (0.0.0.0)."
+            ));
+        }
+    }
+
+    /// Bind the listener to the wildcard address on the configured port.
+    async fn bind_wildcard(&mut self) {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.proxy_port);
+        if let Err(error) = self.bind_addr(addr).await {
+            tracing::error!(%error, "wildcard media-server bind failed");
+        }
+    }
+
+    /// Send a `SetBindAddr` command and await the server task's ack.
+    async fn bind_addr(&self, addr: SocketAddr) -> io::Result<()> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.server.set_bind_addr(addr, ack_tx);
+        match ack_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "media server task ended",
+            )),
+        }
+    }
+
+    /// Ask the user (GUI pop-up) for permission to bind the media server to
+    /// `0.0.0.0`, explaining what failed and the exposure it creates
+    /// (`04-media-proxy.md` §1.1). At most one request is outstanding.
+    fn request_wildcard_fallback(&mut self, reason: String) {
+        if self.fallback_pending {
+            tracing::debug!("wildcard-fallback consent already requested; not asking again");
+            return;
+        }
+        self.fallback_pending = true;
+        tracing::warn!(%reason, "requesting user consent for the wildcard media-server bind");
+        let _ = self
+            .events
+            .send(BackendEvent::BindFallbackRequested(reason));
     }
 
     async fn refresh_displays(&self) {
@@ -336,8 +419,10 @@ async fn supervise<C: Connector>(
     let (cast, cast_handle) =
         CastConnection::start_with_handle(connection_tx, shutdown.clone(), connector);
 
-    // Task C — media server.
-    let (server, server_handle) = MediaServer::start_with_handle(shutdown.clone(), initial_port);
+    // Task C — media server. Starts **unbound**: the interface to bind is
+    // unknown until a receiver is selected, and the `0.0.0.0` wildcard
+    // fallback is gated on explicit user consent (`04-media-proxy.md` §1.1).
+    let (server, server_handle) = MediaServer::start_unbound_with_handle(shutdown.clone());
 
     // The supervisor mirrors the receiver's LAN IP and the server's bound
     // port so `Play` can build the advertised URL.
@@ -349,10 +434,21 @@ async fn supervise<C: Connector>(
         mdns_task,
         rescan: rescan_tx,
         lan_ip: lan_ip::select_lan_ip(None),
+        proxy_port: initial_port,
+        wildcard_consented: false,
+        fallback_pending: false,
         current_source: None,
         last_volume: 0.0,
         muted: false,
     };
+
+    // No receiver is selected yet, so the interface to restrict the media
+    // server to cannot be determined: ask the user before binding `0.0.0.0`
+    // (`04-media-proxy.md` §1.1). The listener stays unbound until the
+    // answer (or until a receiver selection resolves a specific interface).
+    state.request_wildcard_fallback(
+        "No Chromecast receiver is selected yet, so the app cannot determine which network interface the receiver is on. The app wants to fall back to binding all interfaces (0.0.0.0) so the media server is reachable once a receiver is chosen.".to_string(),
+    );
 
     let mut port_rx = state.server.subscribe_port();
     let mut shutdown_rx = shutdown.subscribe();
@@ -393,6 +489,9 @@ async fn supervise<C: Connector>(
         mdns_task,
         rescan: _rescan,
         lan_ip: _lan_ip,
+        proxy_port: _proxy_port,
+        wildcard_consented: _wildcard_consented,
+        fallback_pending: _fallback_pending,
         current_source: _current_source,
         mut last_volume,
         mut muted,

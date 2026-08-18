@@ -91,7 +91,13 @@ The bottom bar SHALL include a status strip rendering:
 
 - A Settings action (gear button in the top bar) SHALL open an egui modal window.
 - The window SHALL expose the proxy port, defaulting to `8080`, validated to the range `1024..=65535`.
-- Saving SHALL dispatch `AppCommand::SetProxyPort(u16)`; the backend SHALL rebind the HTTP listener on the new port and the advertised URL SHALL reflect the change.
+- Saving SHALL dispatch `AppCommand::SetProxyPort(u16)`; the backend SHALL rebind the HTTP listener on the new port (keeping the current bind address) and the advertised URL SHALL reflect the change.
+
+### 3.6 Wildcard-bind consent
+
+- On `BackendEvent::BindFallbackRequested(reason)` the GUI SHALL open a modal asking the user (yes/no) to allow the media server to bind `0.0.0.0` (`04-media-proxy.md` §1.1).
+- The modal SHALL show the reason (what failed / why the fallback is wanted: no receiver selected yet, or the interface bind failed) and the exposure: while bound to `0.0.0.0`, `/stream` is reachable from every interface of the machine, including VPN tunnels and virtual adapters (e.g. while a VPN is active).
+- The answer SHALL dispatch `AppCommand::BindFallback(bool)`; the modal closes on either answer.
 
 ## 4. State model
 

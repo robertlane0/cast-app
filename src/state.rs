@@ -41,6 +41,10 @@ pub enum AppCommand {
     SetProxyPort(u16),
     /// Re-run mDNS discovery (GUI Error-state retry action, `02-gui.md` §3.1).
     Rescan,
+    /// Answer the `BindFallbackRequested` consent prompt: `true` allows the
+    /// media server to bind `0.0.0.0` (all interfaces) as a fallback
+    /// (`04-media-proxy.md` §1.1).
+    BindFallback(bool),
 }
 
 /// Events received from the backend over the unbounded event channel
@@ -53,6 +57,18 @@ pub enum BackendEvent {
     ReceiverDisconnected(CastDevice),
     ConnectionError(String),
     StreamError(String),
-    MediaStatus { playing: bool, buffering: bool },
-    Volume { level: f32, muted: bool },
+    MediaStatus {
+        playing: bool,
+        buffering: bool,
+    },
+    Volume {
+        level: f32,
+        muted: bool,
+    },
+    /// The media server could not (or cannot yet) bind the interface
+    /// address resolved for the current receiver; the backend wants to
+    /// fall back to `0.0.0.0` and asks the user for explicit consent
+    /// (`04-media-proxy.md` §1.1). The payload explains what failed and why
+    /// the fallback is needed; answered via `AppCommand::BindFallback`.
+    BindFallbackRequested(String),
 }

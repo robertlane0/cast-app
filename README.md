@@ -25,7 +25,8 @@ canonical implementation guide.
 - Media proxy: local-file serving with HTTP `Range` (200/206/416), remote-URL
   proxying, anonymous SMB share serving (`smb://host/share/file`, guest logon
   only — shares requiring authentication fail with `401`), LAN-IP
-  advertisement, configurable port
+  advertisement, configurable port, listener restricted to the selected
+  receiver's interface (wildcard `0.0.0.0` only with explicit user consent)
 - Screen capture (X11/macOS/Windows via `xcap`, Wayland via the
   xdg-desktop-portal ScreenCast interface + an in-process PipeWire client)
   piped to `ffmpeg` as raw video, H.264 fragmented MP4 streamed live
@@ -97,20 +98,40 @@ cargo run
 On a LAN with a Chromecast:
 
 1. Wait ~10 s for the receiver to appear in the left panel.
-2. Select it; the status dot turns green.
-3. **Local File** tab — pick a media file, then **Play**.
-4. **Web URL** tab — enter an absolute `http(s)://` media URL or an anonymous
+2. At launch, the app asks whether the media server may bind all interfaces
+   (`0.0.0.0`) before a receiver is selected — see *Security* below. If you
+   decline, the server binds the selected receiver's interface once you pick
+   one.
+3. Select the receiver; the status dot turns green.
+4. **Local File** tab — pick a media file, then **Play**.
+5. **Web URL** tab — enter an absolute `http(s)://` media URL or an anonymous
    `smb://host/share/dir/file.mp4` network-share URL (no credentials accepted),
    then **Play**.
-5. **Display** tab — pick a monitor (requires `ffmpeg`), then **Play**.
-6. Quit — verify no orphan `ffmpeg` process remains.
+6. **Display** tab — pick a monitor (requires `ffmpeg`), then **Play**.
+7. Quit — verify no orphan `ffmpeg` process remains.
+
+## Security
+
+The media server normally binds only the network interface used to reach the
+selected Chromecast, so its `/stream` endpoint is reachable only by hosts on
+the **same LAN segment as the receiver** — the exposure that casting itself
+requires. The listener follows receiver selection changes.
+
+Until a receiver is selected (e.g. right after launch) the interface cannot be
+determined, so the app asks before falling back to binding all interfaces
+(`0.0.0.0`). While bound that way, `/stream` is reachable from **every
+interface of the machine** — the LAN, other Wi-Fi networks, and any VPN tunnel
+or virtual adapter (with a VPN active, the tunnel interface is part of the
+exposure). The fallback is never the default; it happens only with your
+explicit yes, and once granted it stays permitted for the session. Decline it
+if you don't need to cast before selecting a receiver.
 
 ## Configuration
 
 | Setting | Default | Notes |
 |---|---|---|
 | `CAST_APP_LOG` | `info` | Log filter (`debug`, `warn`, `cast_app=debug`, …). Falls back to `RUST_LOG`, then `info`. |
-| Proxy port (Settings UI) | `8080` | Valid range `1024..=65535`; the advertised `/stream` URL rebinds. |
+| Proxy port (Settings UI) | `8080` | Valid range `1024..=65535`; the advertised `/stream` URL rebinds on the current bind address (the selected receiver's interface, or `0.0.0.0` after consent). |
 
 Logs go to the console (INFO and above) and to `cast-app.log` in the platform
 log directory:

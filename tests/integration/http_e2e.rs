@@ -750,3 +750,167 @@ async fn set_port_rebinds_the_listener() {
     assert_eq!(rebound.status().as_u16(), 200);
     assert_eq!(rebound.bytes().await.expect("body"), &b"hello"[..]);
 }
+
+// ---------------------------------------------------------------------------
+// Interface-address binding (`04-media-proxy.md` §1.1)
+// ---------------------------------------------------------------------------
+
+/// A fixed port for these tests, derived from the test process id and kept
+/// below the OS ephemeral range (Linux ≥ 32768, Windows/macOS ≥ 49152), so
+/// parallel tests (which only bind port 0) can never collide with it — the
+/// interface-restriction assertions depend on the port staying closed on
+/// interfaces the listener is not bound to.
+fn static_test_port(offset: u16) -> u16 {
+    20_000 + (std::process::id() % 10_000) as u16 + offset
+}
+
+/// `set_bind_addr` restricts the listener to one interface: after rebinding
+/// to `127.0.0.1`, the server answers on loopback and (when a non-loopback
+/// interface exists) refuses connections on the machine's LAN address —
+/// the same exposure posture as binding the resolved receiver interface.
+#[tokio::test]
+async fn set_bind_addr_restricts_the_listener_to_one_interface() {
+    let shutdown = Shutdown::new();
+    let server = MediaServer::start(shutdown.clone(), static_test_port(0));
+    let port = wait_for_port(&server).await;
+    set_source(
+        &server,
+        ActiveSource::File(write_temp_file("restrict.mp4", b"hi")),
+    )
+    .await;
+
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    server.set_bind_addr(addr, ack_tx);
+    ack_rx
+        .await
+        .expect("ack arrives")
+        .expect("bind to 127.0.0.1 succeeds");
+
+    let client = reqwest::Client::new();
+    let loopback = client
+        .get(stream_url(port))
+        .send()
+        .await
+        .expect("loopback GET after restriction");
+    assert_eq!(loopback.status().as_u16(), 200);
+
+    // The same port on a different interface must no longer accept: the
+    // wildcard bind was replaced by the specific one. (The connect must not
+    // complete: `Ok(Err(..))` = refused within the timeout, `Err(_)` =
+    // timed out — both fine; only `Ok(Ok(..))` means something accepted.)
+    if let Some(lan_ip) = non_loopback_ipv4() {
+        let lan = std::net::SocketAddr::from((lan_ip, port));
+        let refused =
+            tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(lan)).await;
+        assert!(
+            !matches!(refused, Ok(Ok(_))),
+            "listener must not accept on {lan} after the interface-restricted rebind"
+        );
+    }
+
+    shutdown.trigger();
+}
+
+/// A failed `set_bind_addr` (address already in use) is reported through
+/// the ack and leaves the server without a listener (the old one was
+/// dropped so the same port could rebind); a follow-up bind to a free
+/// address re-establishes service.
+#[tokio::test]
+async fn set_bind_addr_failure_reports_error_and_can_be_retried() {
+    let shutdown = Shutdown::new();
+    let server = MediaServer::start(shutdown.clone(), static_test_port(1));
+    let port = wait_for_port(&server).await;
+
+    // Occupy a loopback port with a raw listener, then try to bind the
+    // media server to it: the bind must fail and the ack must carry the
+    // error.
+    let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("occupy a port");
+    let occupied_port = occupied.local_addr().unwrap().port();
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, occupied_port));
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    server.set_bind_addr(addr, ack_tx);
+    ack_rx
+        .await
+        .expect("ack arrives")
+        .expect_err("occupied address must fail to bind");
+
+    // The old listener was dropped before the failed bind: the port is
+    // free again (claim it before any parallel test can).
+    let claim = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("old listener must release the port after the failed rebind");
+    drop(claim);
+
+    // Retry on a free address: the server comes back up and serves.
+    let retry = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    server.set_bind_addr(retry, ack_tx);
+    ack_rx
+        .await
+        .expect("ack arrives")
+        .expect("retry bind succeeds");
+    let rebound = server.bound_port();
+    assert_ne!(rebound, 0);
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://127.0.0.1:{rebound}/stream"))
+        .send()
+        .await
+        .expect("GET after retry bind");
+    assert_eq!(response.status().as_u16(), 404, "no source set yet");
+
+    shutdown.trigger();
+}
+
+/// The unbound constructor (`start_unbound_with_handle`, the app path)
+/// listens on nothing: `set_port` cannot create a listener behind the
+/// consent gate, and the first `set_bind_addr` establishes the listener on
+/// the given address.
+#[tokio::test]
+async fn unbound_server_ignores_set_port_until_bind_addr() {
+    let shutdown = Shutdown::new();
+    let (server, _handle) = MediaServer::start_unbound_with_handle(shutdown.clone());
+    assert_eq!(server.bound_port(), 0, "starts unbound");
+
+    server.set_port(12345);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        server.bound_port(),
+        0,
+        "SetPort cannot bind without a configured bind address"
+    );
+
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    server.set_bind_addr(addr, ack_tx);
+    ack_rx
+        .await
+        .expect("ack arrives")
+        .expect("first bind succeeds");
+    let port = server.bound_port();
+    assert_ne!(port, 0, "bound after the first SetBindAddr");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(stream_url(port))
+        .send()
+        .await
+        .expect("unbound-then-bound GET");
+    assert_eq!(response.status().as_u16(), 404, "no source set yet");
+
+    shutdown.trigger();
+}
+
+/// First non-loopback IPv4 address of this machine, if any.
+fn non_loopback_ipv4() -> Option<std::net::Ipv4Addr> {
+    if_addrs::get_if_addrs()
+        .ok()?
+        .into_iter()
+        .find_map(|iface| match iface.addr {
+            if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() && iface.is_oper_up() => Some(v4.ip),
+            _ => None,
+        })
+}

@@ -26,6 +26,8 @@
 | FR-020 | Send media-namespace `LOAD` with the local proxy URL. | Protocol integration test |
 | FR-021 | Correlate responses to requests by `requestId`. | Unit test |
 | FR-022 | Advertise the local HTTP endpoint using a LAN IP reachable by the receiver. | HTTP/integration test |
+| FR-035 | Bind the media server to the interface address resolved for the selected receiver (exposure limited to the receiver's LAN segment); rebind on receiver change. | `http_e2e` `set_bind_addr` tests |
+| FR-036 | The `0.0.0.0` wildcard bind is gated on explicit user consent (yes/no pop-up); the server starts unbound and `SetProxyPort` cannot create a listener without a bind address. | `runtime_tests` consent round-trip + `gui_state_tests` prompt tests |
 | FR-023 | Backend state changes reach the GUI through a non-blocking event channel. | GUI test |
 | FR-024 | Screen-capture backpressure drops the oldest frame instead of blocking. | Pipeline test |
 | FR-025 | A missing `ffmpeg` executable disables the Display source with an error. | Process test/manual |
@@ -117,6 +119,15 @@ Test:
 - fallback to the default-route interface;
 - loopback fallback with a warning.
 
+### Media-server binding
+
+Test:
+
+- `set_bind_addr` restricts the listener to one interface: the same port no longer accepts on other interfaces (loopback-only listener, LAN-address connect refused);
+- a failed bind (occupied address) is reported through the ack and releases the old listener; a retry on a free address re-establishes service;
+- the unbound constructor ignores `SetPort` until the first `SetBindAddr` (no listener can be created behind the consent gate);
+- the runtime consent round-trip: startup `BindFallbackRequested` event, decline still binds the receiver's resolved interface, later consent re-enables Play's advertised port.
+
 ### MIME detection
 
 Test the extension-based map for known video/audio types and the `application/octet-stream` default.
@@ -190,7 +201,7 @@ The implementation is considered aligned with this specification set when all st
 TBDs required for production are resolved and reflected in these specifications. The mandatory set is:
 
 - Cast protocol: CastMessage field schema, inbound decoder, `requestId` correlation, source/destination IDs, media-namespace `LOAD` and transport controls, heartbeat/reconnect policy.
-- HTTP proxy: bind address and port, LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture, anonymous SMB share serving (`04-media-proxy.md` §4.4).
+- HTTP proxy: bind address and port (interface-restricted, wildcard only after user consent), LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture, anonymous SMB share serving (`04-media-proxy.md` §4.4).
 - Screen capture: capture crate, pixel-format conversion, resolution handling, `ffmpeg` discovery and lifecycle, backpressure, shutdown.
 - Concurrency: channel crate, event channel, data ownership, supervision and cancellation.
 - Platform: OS support matrix, toolchain, dependency pinning, `ffmpeg` install strategy, CI gate.

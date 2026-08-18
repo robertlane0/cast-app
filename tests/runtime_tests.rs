@@ -341,6 +341,82 @@ fn fatal_mdns_setup_surfaces_error_and_rescan_revives() {
     backend.shutdown();
 }
 
+/// The `0.0.0.0` wildcard media-server bind is gated on explicit user
+/// consent (`04-media-proxy.md` §1.1): the startup request is surfaced as
+/// `BindFallbackRequested`, a decline keeps the wildcard unbound (receiver
+/// selection still binds the resolved interface — the restrictive path needs
+/// no consent), and a later consent re-enables Play's advertised port.
+#[test]
+fn wildcard_bind_consent_round_trip() {
+    let connector = MockConnector::new();
+    let (backend, command_tx, mut event_rx) =
+        Backend::start_with(Ok(discovery_socket().unwrap()), 0, connector.clone());
+
+    // Startup: no receiver selected yet → the app asks before binding
+    // 0.0.0.0. The reason explains why and names the wildcard address.
+    match expect_event_matching(&mut event_rx, |event| {
+        matches!(event, BackendEvent::BindFallbackRequested(_))
+    }) {
+        BackendEvent::BindFallbackRequested(reason) => {
+            assert!(
+                reason.contains("0.0.0.0"),
+                "reason names the wildcard bind: {reason}"
+            );
+        }
+        other => panic!("expected BindFallbackRequested, got {other:?}"),
+    }
+
+    // Decline: the wildcard stays unbound, but selecting a receiver binds
+    // the resolved interface — the restrictive path needs no consent.
+    command_tx.send(AppCommand::BindFallback(false)).unwrap();
+    let device = test_device();
+    command_tx
+        .send(AppCommand::SelectReceiver(device.clone()))
+        .unwrap();
+    match expect_event_matching(&mut event_rx, |event| {
+        matches!(event, BackendEvent::ReceiverConnected(_))
+    }) {
+        BackendEvent::ReceiverConnected(connected) => assert_eq!(connected, device),
+        other => panic!("expected ReceiverConnected, got {other:?}"),
+    }
+    let pipe = connector.last_pipe().expect("pipe created on connect");
+    drain_wire(&pipe, Duration::from_millis(200)); // CONNECT
+
+    command_tx
+        .send(AppCommand::SelectFile(PathBuf::from(
+            "/tmp/consent-test.mp4",
+        )))
+        .unwrap();
+    command_tx.send(AppCommand::Play).unwrap();
+    expect_wire_frame(
+        &pipe,
+        "Play launches with the interface-bound listener",
+        |ns, json| ns == RECEIVER_NS && json["type"] == "LAUNCH",
+    );
+    pipe.push_incoming(&receiver_status_frame("t-c", "s-c", 0.5, false));
+    expect_wire_frame(&pipe, "LOAD after Ready", |ns, json| {
+        ns == MEDIA_NS && json["type"] == "LOAD"
+    });
+
+    // Late consent: answering yes permits the wildcard bind; a subsequent
+    // Play still advertises a reachable port.
+    command_tx.send(AppCommand::BindFallback(true)).unwrap();
+    command_tx.send(AppCommand::Play).unwrap();
+    let load = expect_wire_frame(&pipe, "LOAD after consent", |ns, json| {
+        ns == MEDIA_NS && json["type"] == "LOAD"
+    });
+    let content_id = load.1["media"]["contentId"]
+        .as_str()
+        .expect("contentId is a string");
+    let url = url::Url::parse(content_id).expect("contentId parses as URL");
+    assert!(
+        url.port().is_some(),
+        "LOAD advertises a bound port after consent"
+    );
+
+    backend.shutdown();
+}
+
 /// The coordinated shutdown: HTTP listener stops accepting, the Cast session
 /// closes with its final events drained to the GUI, and the GUI channel
 /// closes once every task has ended — all within a bounded budget.
@@ -352,6 +428,7 @@ fn coordinated_shutdown_order() {
     drain_startup_events(&mut event_rx);
 
     let device = test_device();
+    command_tx.send(AppCommand::BindFallback(true)).unwrap();
     command_tx
         .send(AppCommand::SelectReceiver(device.clone()))
         .unwrap();
@@ -470,6 +547,7 @@ fn screen_play_uses_live_stream_type() {
     drain_startup_events(&mut event_rx);
 
     let device = test_device();
+    command_tx.send(AppCommand::BindFallback(true)).unwrap();
     command_tx
         .send(AppCommand::SelectReceiver(device.clone()))
         .unwrap();

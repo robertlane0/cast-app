@@ -340,6 +340,47 @@ fn saving_proxy_port_dispatches() {
 }
 
 // ---------------------------------------------------------------------------
+// Wildcard-bind consent prompt (`04-media-proxy.md` §1.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bind_fallback_requested_opens_the_prompt() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::BindFallbackRequested(
+        "binding 10.0.0.5:8080 failed".into(),
+    ));
+    assert_eq!(
+        h.dashboard.bind_fallback_prompt(),
+        Some("binding 10.0.0.5:8080 failed")
+    );
+    h.assert_no_command();
+}
+
+#[test]
+fn answering_bind_fallback_dispatches_and_closes_the_prompt() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::BindFallbackRequested(
+        "no receiver yet".into(),
+    ));
+    h.dashboard.answer_bind_fallback(true);
+    assert_eq!(h.dashboard.bind_fallback_prompt(), None);
+    assert_eq!(h.next_command(), AppCommand::BindFallback(true));
+
+    h.push(BackendEvent::BindFallbackRequested("rebind failed".into()));
+    h.dashboard.answer_bind_fallback(false);
+    assert_eq!(h.dashboard.bind_fallback_prompt(), None);
+    assert_eq!(h.next_command(), AppCommand::BindFallback(false));
+}
+
+#[test]
+fn a_new_request_replaces_the_pending_prompt() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::BindFallbackRequested("first reason".into()));
+    h.push(BackendEvent::BindFallbackRequested("second reason".into()));
+    assert_eq!(h.dashboard.bind_fallback_prompt(), Some("second reason"));
+}
+
+// ---------------------------------------------------------------------------
 // Enablement rules (02-gui.md §3.3)
 // ---------------------------------------------------------------------------
 

@@ -16,14 +16,42 @@ http://<LAN-IP>:8080/stream
 
 ### 1.1 Binding and advertisement
 
-- The server SHALL bind `0.0.0.0:8080` so any LAN host (including the Chromecast) can reach it.
+- The server SHALL bind the interface address resolved for the currently selected
+  receiver (the `select_lan_ip` rules below) — a **specific interface address, never
+  the wildcard on its own** — so the listener is reachable only by hosts on the same
+  LAN segment as the Chromecast.
+- The bind SHALL follow receiver selection changes: re-selecting a receiver re-runs
+  `select_lan_ip` and SHALL rebind the listener to the newly resolved interface
+  address.
+- Until a receiver is selected (e.g. at application startup) the interface cannot be
+  determined, so the server starts **unbound**. The app SHALL ask the user for
+  explicit consent — a yes/no pop-up (`02-gui.md` §3.5) — before falling back to a
+  `0.0.0.0` (all-interfaces) bind; the pop-up SHALL explain what failed / why the
+  fallback is wanted (no receiver selected yet, or binding the resolved interface
+  failed) and the exposure it creates (reachable from every interface of the machine,
+  including VPN tunnels and virtual adapters). The wildcard bind SHALL be used only
+  after that consent, which is remembered for the session; while consent is
+  outstanding, no listener exists.
 - The port SHALL be configurable via application settings, defaulting to `8080`.
+  Port rebinding SHALL keep the current bind address; the port setting cannot create
+  a listener while the server is unbound.
 - `/stream` is the only route; any other path returns `404`.
 - The engine SHALL advertise the endpoint using a local LAN IP selected as follows:
   1. the address of the interface whose subnet contains the selected receiver's IP; otherwise
   2. the address of the interface carrying the default route; otherwise
   3. `127.0.0.1` with a warning, since the Chromecast cannot reach loopback.
 - LAN IP selection SHALL re-run when the receiver selection changes.
+
+**Residual exposure.** The accepted residual exposure of the media server is **the
+same LAN segment as the selected Chromecast**: binding the receiver's interface
+address means any host on that interface's subnet that can reach the machine can fetch
+`/stream`. This exposure is inherent to casting — the Chromecast must pull the media
+from the desktop over the LAN. The user-consented `0.0.0.0` bind extends that exposure
+to every interface of the machine (LAN, other Wi-Fi networks, VPN tunnels, virtual
+adapters — e.g. while a VPN is active the tunnel interface is also exposed); it is a
+deliberate, user-approved fallback, never the default. No other mitigation is
+provided: the endpoint has no authentication (as in this release), and the exposure is
+documented to the user at consent time.
 
 ### 1.2 Active source model
 
@@ -149,7 +177,11 @@ The proxy SHALL also support the encoded output produced by the screen-capture p
 
 ## 6. HTTP acceptance criteria
 
-- [x] Local HTTP server starts asynchronously bound to `0.0.0.0:8080`.
+- [x] Local HTTP server starts asynchronously bound to the interface address resolved for the selected receiver (or to `0.0.0.0` after explicit user consent).
+- [x] The listener rebinds when the receiver selection changes the resolved interface (`set_bind_addr` with the re-resolved address).
+- [x] The `0.0.0.0` fallback is gated on a user consent pop-up (yes/no) explaining what failed, why the fallback is wanted, and the exposure it creates (all interfaces, incl. VPN tunnels); consent is remembered for the session.
+- [x] The media server starts unbound; port rebinding (`SetProxyPort`) keeps the current bind address and cannot create a listener while unbound.
+- [x] A failed interface bind leaves the server without a listener and is reported (ack), so the app can ask for the wildcard fallback.
 - [x] The advertised LAN IP is selected from the receiver's subnet or the default route.
 - [x] Chromecast can access the advertised local URL.
 - [x] Local files are streamed without full-file buffering.
