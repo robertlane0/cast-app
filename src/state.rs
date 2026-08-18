@@ -14,6 +14,9 @@ pub struct CastDevice {
     pub name: String,
     /// Receiver TCP address (mDNS SRV port plus A record).
     pub addr: SocketAddr,
+    /// TOFU certificate-pin key (`03-cast-engine.md` §3.1): the mDNS TXT
+    /// `id=` when advertised, else `friendlyName+IP`.
+    pub tofu_key: String,
 }
 
 /// Source selection tab (`02-gui.md` §3.2).
@@ -71,4 +74,9 @@ pub enum BackendEvent {
     /// (`04-media-proxy.md` §1.1). The payload explains what failed and why
     /// the fallback is needed; answered via `AppCommand::BindFallback`.
     BindFallbackRequested(String),
+    /// TOFU pin mismatch (`03-cast-engine.md` §3.1): the certificate the
+    /// receiver presented differs from the one first seen for this device.
+    /// The connection proceeds (warn, not block); the payload explains what
+    /// changed and what it may mean.
+    CertificateWarning(String),
 }

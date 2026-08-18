@@ -105,6 +105,9 @@ http      = "1"
 if-addrs = "0.15.0"
 url = "2"
 percent-encoding = "2"
+# SHA-256 for trust-on-first-use (TOFU) certificate pinning (`03-cast-engine.md` §3.1):
+# the first-seen receiver certificate's digest is stored per receiver key.
+sha2 = "0.11"
 # Pure-Rust SMB2/3 client for anonymous network-share streaming (`04-media-proxy.md` §4.4).
 # Empty username/password = guest; the crate exposes ErrorKind::AuthRequired so
 # authentication-required shares fail explicitly instead of prompting.
@@ -251,14 +254,15 @@ src/
   cast/
     mod.rs
     mdns.rs              # UDP multicast discovery + DNS parser
-    tls.rs               # rustls ClientConfig + permissive verifier
+    tls.rs               # rustls ClientConfig + permissive verifier + peer fingerprint
     framing.rs           # 4-byte BE length-prefix encode/decode
     proto.rs             # hand-rolled CastMessage protobuf codec
     request_id.rs        # monotonic u32 + pending-request map w/ 5s timeout
+    tofu.rs              # TOFU certificate-pin store: SHA-256 pins keyed by TXT id=/friendlyName+IP, persisted known_hosts.json
     namespaces.rs        # CONNECT, PING, LAUNCH, GET_STATUS, SET_VOLUME, STOP_APP, LOAD, PLAY, PAUSE, STOP
     connection/
     mod.rs             # facade: CastConnection handle, re-exports, test_support
-    transport.rs       # Transport trait, SharedTransport, Connector/TlsConnector
+    transport.rs       # Transport trait, SharedTransport, Connector/TlsConnector (TOFU-aware)
     reader.rs          # FrameAccumulator + dedicated reader thread
     writer.rs          # framed send_payload on spawn_blocking workers
     state_machine.rs   # Phase/Command/events, inbound routing, run loop, reconnect policy
@@ -576,6 +580,7 @@ acceptance criteria pass.
 | `state.rs`, `app.rs` | `02-gui.md` |
 | `cast/mdns.rs` | `03-cast-engine.md` §2 |
 | `cast/tls.rs` | `03-cast-engine.md` §3 |
+| `cast/tofu.rs` | `03-cast-engine.md` §3.1 |
 | `cast/proto.rs`, `cast/framing.rs` | `03-cast-engine.md` §4–5 |
 | `cast/request_id.rs`, `cast/namespaces.rs` | `03-cast-engine.md` §6 |
 | `cast/connection/` (facade + transport/reader/writer/state_machine/teardown) | `03-cast-engine.md` §7 |
@@ -659,6 +664,7 @@ Then, on a LAN with a real Chromecast and a machine with `ffmpeg` on `PATH`:
 - **mDNS:** the receiver replies to the source port of your query socket; you do **not** need to bind `5353`. Binding `5353` will fail on most OSes without root.
 - **DNS compression:** a pointer can target another pointer; cap depth at 4 and track visited offsets to break cycles.
 - **TLS:** rustls 0.23 requires you to explicitly select a crypto provider (`rustls::crypto::ring::default_provider().install_default()` once at startup).
+- **TOFU (`03-cast-engine.md` §3.1):** the pin check lives in the connector (`TlsConnector::record_pin`), keyed by `CastDevice::tofu_key` (TXT `id=` wins over `friendlyName+IP` — only the TXT id survives DHCP address changes). A mismatch must never block the connection and must never re-pin: keep the original pin (SSH semantics) and surface `BackendEvent::CertificateWarning`, which the GUI must NOT auto-dismiss on success events (a security notice blinking away mid-connect is worthless). The store persists atomically (tmp + rename) and must degrade to an empty in-memory store on any load/save failure — pinning is best-effort hardening, never a startup failure. `sha2` hashes the end-entity DER from `ClientConnection::peer_certificates()` *after* the handshake, so the handshake worker needs no changes.
 - **Protobuf:** the length prefix is part of the **framing**, not the protobuf payload. Encode payload → measure → prepend 4-byte BE length.
 - **Heartbeat:** PONG must reset the watchdog, not just be received. If you only set "received any message" you'll miss silent heartbeat failures.
 - **HTTP Range:** `bytes=0-` is valid (200 OK or 206 from offset 0); `bytes=-0` is unsatisfiable (416); `bytes=1-0` is malformed (416). never flush per chunk in streaming handlers — it defeats the `BufWriter` and burns a syscall per chunk. Use `FlushTracker` with per-handler byte/time thresholds (`url_proxy.rs` `FLUSH_BYTES`/`FLUSH_INTERVAL` = 32 KiB/25 ms; `server.rs` live-screen = 64 KiB/50 ms), flush the response head immediately, and always flush the tail before a close-delimited stream ends.

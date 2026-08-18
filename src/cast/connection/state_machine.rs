@@ -26,6 +26,7 @@ use crate::cast::namespaces::{
 use crate::cast::proto::{decode_cast_message, encode_cast_message};
 use crate::cast::request_id::{PendingMap, RequestId};
 use crate::cast::tls::TlsError;
+use crate::cast::tofu::{Fingerprint, PinCheck};
 use crate::state::CastDevice;
 use crate::util::retry::Backoff;
 use crate::util::shutdown::Shutdown;
@@ -101,6 +102,14 @@ pub enum ConnectionEvent {
     MediaStatus { playing: bool, buffering: bool },
     /// `RECEIVER_STATUS` volume (`FR-018`).
     Volume { level: f32, muted: bool },
+    /// TOFU pin mismatch (`03-cast-engine.md` §3.1): the certificate the
+    /// receiver presented differs from the one first seen. The connection
+    /// proceeds; the payload carries both digests for the warning message.
+    CertificateMismatch {
+        device: CastDevice,
+        previous: Fingerprint,
+        current: Fingerprint,
+    },
 }
 
 /// Fatal connection errors surfaced to the GUI (`03-cast-engine.md` §7.1).
@@ -549,14 +558,24 @@ async fn establish<C: crate::cast::connection::transport::Connector>(
     config: &ConnectionConfig,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ConnectionError> {
-    let transport =
+    let (transport, pin_check) =
         connector
-            .connect(device.addr)
+            .connect(&device)
             .await
             .map_err(|source| ConnectionError::Tls {
                 addr: device.addr,
                 source,
             })?;
+
+    // A TOFU mismatch never blocks the connection (`03-cast-engine.md`
+    // §3.1), but it must reach the GUI as a warning.
+    if let PinCheck::Mismatch { previous, current } = pin_check {
+        let _ = events.send(ConnectionEvent::CertificateMismatch {
+            device: device.clone(),
+            previous,
+            current,
+        });
+    }
 
     // CONNECT before the reader spawns so a failed write cannot leak a
     // blocked reader thread.

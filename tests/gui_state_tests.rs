@@ -22,6 +22,7 @@ fn device(name: &str) -> CastDevice {
         id: format!("{name}:8009"),
         name: name.to_string(),
         addr: SocketAddr::from(([192, 168, 1, 50], 8009)),
+        tofu_key: format!("{name}+192.168.1.50"),
     }
 }
 
@@ -82,6 +83,7 @@ fn initial_state_is_scanning_and_idle() {
     assert!(!h.dashboard.has_active_source());
     assert!(!h.dashboard.file_picker_open());
     assert!(h.dashboard.error_banner().is_none());
+    assert!(h.dashboard.security_warning().is_none());
     assert_eq!(
         h.dashboard.ffmpeg_available(),
         cast_app::screen::ffmpeg_discover::ffmpeg_available()
@@ -238,6 +240,53 @@ fn error_banner_is_transient_across_success_events() {
         buffering: false,
     });
     assert!(h.dashboard.error_banner().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// TOFU certificate warning (`03-cast-engine.md` §3.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn certificate_warning_shows_a_sticky_security_banner() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::CertificateWarning(
+        "the certificate changed".into(),
+    ));
+    assert_eq!(
+        h.dashboard.security_warning(),
+        Some("the certificate changed")
+    );
+    // A security notice must not be auto-dismissed by success events.
+    h.push(BackendEvent::ReceiverConnected(device("A")));
+    h.push(BackendEvent::MediaStatus {
+        playing: true,
+        buffering: false,
+    });
+    assert_eq!(
+        h.dashboard.security_warning(),
+        Some("the certificate changed")
+    );
+    assert!(
+        h.dashboard.error_banner().is_none(),
+        "the warning is separate from the transient error banner"
+    );
+}
+
+#[test]
+fn certificate_warning_is_manually_dismissable() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::CertificateWarning("changed".into()));
+    assert!(h.dashboard.security_warning().is_some());
+    h.dashboard.dismiss_security_warning();
+    assert!(h.dashboard.security_warning().is_none());
+}
+
+#[test]
+fn a_new_certificate_warning_replaces_the_previous_one() {
+    let mut h = Harness::new();
+    h.push(BackendEvent::CertificateWarning("first".into()));
+    h.push(BackendEvent::CertificateWarning("second".into()));
+    assert_eq!(h.dashboard.security_warning(), Some("second"));
 }
 
 #[test]

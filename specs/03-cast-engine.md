@@ -77,7 +77,7 @@ The engine SHALL correlate SRV, TXT and A records in the same response to that i
 
 - `SRV` — receiver port (the target hostname is not used for connection);
 - `A` — receiver IPv4 address;
-- `TXT` — friendly name from the `fn=` key-value pair, falling back to the instance label.
+- `TXT` — friendly name from the `fn=` key-value pair, falling back to the instance label, and the stable hardware identifier from the `id=` key-value pair when present (used as the TOFU pin key, §3.1).
 
 TXT records SHALL be parsed as RFC 6763 length-prefixed `key=value` strings.
 
@@ -104,7 +104,13 @@ The verifier SHALL:
 - complete the full TLS handshake including server signature verification;
 - skip certificate chain and identity (hostname) trust evaluation, because Cast devices use self-signed certificates and no trust anchor or pin-distribution channel exists.
 
-Hostname/certificate pinning is a documented future hardening option and is out of scope for this release.
+Trust is instead built with trust-on-first-use (TOFU) pinning, modeled on SSH host keys:
+
+- the engine SHALL extract the receiver's mDNS TXT `id=` value (the stable hardware identifier) when advertised and use it as the pin key; otherwise the pin key SHALL be the friendly name (`fn=`) combined with the IP address;
+- on the first connection to a pin key, the engine SHALL store the SHA-256 fingerprint of the receiver's end-entity certificate (DER encoding), persisted in `known_hosts.json` in the platform state directory so pins survive restarts;
+- on subsequent connections the engine SHALL compare the presented certificate's fingerprint against the stored pin;
+- a mismatch SHALL NOT block the connection (there is no authenticated pin-distribution channel, and a factory reset or device replacement is legitimate): it SHALL log a warning and surface `BackendEvent::CertificateWarning` to the GUI, which shows a sticky security notice;
+- the stored pin SHALL be kept on mismatch (never silently re-pinned); deleting `known_hosts.json` re-arms TOFU.
 
 ### 3.2 Handshake parameters
 
@@ -314,6 +320,7 @@ Discover
 - [x] Malformed DNS packets are discarded without panicking.
 - [x] TCP connection can be wrapped with `rustls`.
 - [x] Self-signed receiver certificates are accepted as specified.
+- [x] TOFU certificate pinning: first-seen fingerprints are stored per receiver key (TXT `id=` or `friendlyName+IP`) and persisted; identical certificates match; a mismatch warns (log + GUI security notice) without blocking and never re-pins.
 - [x] CastV2 frames contain a big-endian 4-byte length prefix.
 - [x] The decoder reads the length prefix and the exact payload length, rejecting frames over 16 MiB.
 - [x] CastMessage serialization does not depend on `prost`.

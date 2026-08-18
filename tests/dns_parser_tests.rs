@@ -170,6 +170,10 @@ fn golden_response_yields_device() {
     assert_eq!(devices[0].ip, Ipv4Addr::new(192, 168, 1, 42));
     assert_eq!(devices[0].port, 8009);
     assert_eq!(devices[0].name, "My Living Room");
+    assert_eq!(
+        devices[0].device_id, None,
+        "no TXT id= in the golden packet"
+    );
 }
 
 #[test]
@@ -179,6 +183,10 @@ fn single_device_packet_correlates() {
     assert_eq!(devices[0].ip, Ipv4Addr::new(10, 0, 0, 5));
     assert_eq!(devices[0].port, 8009);
     assert_eq!(devices[0].name, "Kitchen TV");
+    assert_eq!(
+        devices[0].device_id, None,
+        "single_device_packet TXT has no id= entry"
+    );
 }
 
 #[test]
@@ -213,6 +221,11 @@ fn friendly_name_falls_back_to_instance_label() {
     let devices = parse_packet(&pkt).expect("packet parses");
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].name, "Kitchen");
+    assert_eq!(
+        devices[0].device_id.as_deref(),
+        Some("0123456789"),
+        "TXT id= is extracted for the TOFU pin key"
+    );
 }
 
 #[test]

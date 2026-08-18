@@ -124,6 +124,11 @@ pub struct CastDashboard {
     volume_throttle: VolumeThrottle,
     volume_dragging: bool,
     error_banner: Option<String>,
+    /// TOFU certificate warning (`03-cast-engine.md` §3.1): the receiver's
+    /// certificate differs from the one first seen. Unlike the transient
+    /// error banner, it is never auto-dismissed by success events — a
+    /// security notice must stay visible until the user acknowledges it.
+    security_warning: Option<String>,
     /// Outstanding `BindFallbackRequested` prompt: the reason the backend
     /// wants to bind the media server to `0.0.0.0` (`04-media-proxy.md` §1.1).
     /// `Some` while the consent modal is open.
@@ -165,6 +170,7 @@ impl CastDashboard {
             volume_throttle: VolumeThrottle::new(),
             volume_dragging: false,
             error_banner: None,
+            security_warning: None,
             bind_fallback: None,
             has_active_source: false,
             ffmpeg_available: ffmpeg_discover::ffmpeg_available(),
@@ -253,6 +259,11 @@ impl CastDashboard {
                 // Open (or refresh) the consent modal; the answer dispatches
                 // `AppCommand::BindFallback` (`04-media-proxy.md` §1.1).
                 self.bind_fallback = Some(reason);
+            }
+            BackendEvent::CertificateWarning(message) => {
+                // TOFU pin mismatch (`03-cast-engine.md` §3.1): sticky — no
+                // success event may auto-dismiss a security notice.
+                self.security_warning = Some(message);
             }
         }
     }
@@ -523,6 +534,17 @@ impl CastDashboard {
         self.error_banner.as_deref()
     }
 
+    /// The outstanding TOFU certificate warning, if any
+    /// (`03-cast-engine.md` §3.1).
+    pub fn security_warning(&self) -> Option<&str> {
+        self.security_warning.as_deref()
+    }
+
+    /// Manually dismiss the TOFU certificate warning.
+    pub fn dismiss_security_warning(&mut self) {
+        self.security_warning = None;
+    }
+
     /// The outstanding wildcard-bind consent prompt, if any
     /// (`04-media-proxy.md` §1.1).
     pub fn bind_fallback_prompt(&self) -> Option<&str> {
@@ -779,6 +801,24 @@ impl CastDashboard {
         ui.label(playback);
     }
 
+    /// The security-notice bar (TOFU certificate mismatch, `03-cast-engine.md`
+    /// §3.1) and the transient error bar. The security notice is sticky
+    /// (manual dismiss only); the error banner is transient.
+    fn banner_bars(&mut self, ui: &mut egui::Ui) {
+        if let Some(message) = self.security_warning.clone() {
+            ui.horizontal(|ui| {
+                ui.colored_label(egui::Color32::from_rgb(255, 176, 0), "Security notice:");
+                ui.label(message);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Dismiss").clicked() {
+                        self.dismiss_security_warning();
+                    }
+                });
+            });
+        }
+        self.error_banner_bar(ui);
+    }
+
     fn error_banner_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.colored_label(egui::Color32::RED, "Error:");
@@ -861,10 +901,17 @@ impl eframe::App for CastDashboard {
             ui.ctx().request_repaint();
         }
 
-        if self.error_banner.is_some() {
-            egui::Panel::bottom("error_banner")
-                .exact_size(28.0)
-                .show(ui, |ui| self.error_banner_bar(ui));
+        if self.error_banner.is_some() || self.security_warning.is_some() {
+            // The security notice (TOFU) and the transient error banner
+            // share the bottom strip; the security notice may push the bar
+            // to two lines (`03-cast-engine.md` §3.1).
+            egui::Panel::bottom("banner_bar")
+                .exact_size(if self.security_warning.is_some() {
+                    56.0
+                } else {
+                    28.0
+                })
+                .show(ui, |ui| self.banner_bars(ui));
         }
         egui::Panel::bottom("controls")
             .exact_size(CONTROLS_BAR_HEIGHT)

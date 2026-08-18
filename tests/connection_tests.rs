@@ -27,6 +27,7 @@ fn test_device() -> CastDevice {
         id: "living-room".to_string(),
         name: "Living Room".to_string(),
         addr: "10.0.0.5:8009".parse().expect("valid test address"),
+        tofu_key: "Living Room+10.0.0.5".to_string(),
     }
 }
 

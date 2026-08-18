@@ -35,6 +35,7 @@
 | FR-027 | Configure the proxy port from the Settings UI. | GUI test/integration |
 | FR-033 | Serve anonymous `smb://host/share/path` network-share URLs through `/stream` with the §3.1 Range policy. | `smb_tests` (fakes) + feature-gated `smb_e2e` |
 | FR-034 | SMB is anonymous-only: URLs with userinfo are rejected; a server rejecting the guest logon fails with `401`; no credentials exist in the app. | `smb_tests` parse/serve tests |
+| FR-037 | TOFU certificate pinning: store the SHA-256 of the first-seen receiver certificate per receiver key (mDNS TXT `id=`, else `friendlyName+IP`), persisted across restarts; warn — never block — on a mismatch in later connections, and never re-pin silently. | `tofu` unit tests + `tls_e2e` TOFU lifecycle + `gui_state_tests` security-notice tests |
 
 ## 2. Safety and architecture requirements
 
@@ -56,6 +57,7 @@ Test:
 - extraction of IP;
 - extraction of port;
 - extraction of friendly name;
+- extraction of the TXT `id=` device identifier (TOFU pin key);
 - malformed packet handling (discarded and logged, never panicking, per `03-cast-engine.md` §2.3);
 - compression-pointer handling.
 
@@ -141,6 +143,17 @@ Test:
 - segment-aware encoded-byte backpressure: slow consumer receives only whole fMP4 segments, encoder restart emits a fresh init before any new fragments;
 - `ffmpeg` discovery on `PATH`;
 - graceful shutdown sends EOF, then kills after the timeout.
+
+### TOFU pinning (FR-037)
+
+Test:
+
+- receiver key construction: TXT `id=` wins over `friendlyName+IP`; an empty `id=` falls back;
+- first-seen certificate is pinned and stored; the identical certificate matches afterwards;
+- a different certificate reports both digests as a mismatch, never blocks, and keeps the original pin;
+- pins persist across store reloads; a missing/corrupt store file or malformed entries degrade to an empty store;
+- end-to-end (real rustls handshakes): Pinned → Matched → Mismatch → still-Matched;
+- GUI: `CertificateWarning` shows a sticky security notice that success events do not auto-dismiss.
 
 ### GUI state
 

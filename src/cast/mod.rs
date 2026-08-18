@@ -10,3 +10,4 @@ pub mod namespaces;
 pub mod proto;
 pub mod request_id;
 pub mod tls;
+pub mod tofu;

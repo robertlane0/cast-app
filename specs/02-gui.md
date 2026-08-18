@@ -85,7 +85,8 @@ The bottom bar SHALL include a status strip rendering:
 
 - connection state: `Scanning`, `Connected <name>`, or `Disconnected` — rendered as a colored dot (amber = scanning, green = connected, red = disconnected/error) next to the state text;
 - playback state from `BackendEvent::MediaStatus`: `Idle`, `Playing`, `Paused`, or `Buffering`;
-- a transient error banner showing the most recent `BackendEvent::ConnectionError` or `StreamError`, dismissed on the next successful event or on manual dismiss.
+- a transient error banner showing the most recent `BackendEvent::ConnectionError` or `StreamError`, dismissed on the next successful event or on manual dismiss;
+- a security-notice banner on `BackendEvent::CertificateWarning` (TOFU pin mismatch, `03-cast-engine.md` §3.1): unlike the transient error banner it SHALL NOT be auto-dismissed by success events — only manual dismiss clears it, so a security notice cannot blink away during connect.
 
 ### 3.5 Settings
 
@@ -112,6 +113,7 @@ struct CastDevice {
     id: String,          // stable id, e.g. IP:port
     name: String,        // friendly name (TXT fn=)
     addr: std::net::SocketAddr,
+    tofu_key: String,    // TOFU pin key: TXT id= when advertised, else friendlyName+IP
 }
 
 enum SourceTab {
@@ -152,6 +154,8 @@ enum BackendEvent {
     StreamError(String),
     MediaStatus { playing: bool, buffering: bool },
     Volume { level: f32, muted: bool },
+    BindFallbackRequested(String), // wildcard-bind consent prompt (§3.6)
+    CertificateWarning(String),    // TOFU pin mismatch (`03-cast-engine.md` §3.1)
 }
 ```
 

@@ -180,6 +180,7 @@ async fn resolve_receiver() -> Option<CastDevice> {
             id: addr.to_string(),
             name: "env-pinned receiver".to_string(),
             addr,
+            tofu_key: addr.to_string(),
         });
     }
     discover_via_mdns(DISCOVER_WINDOW).await.into_iter().next()

@@ -39,6 +39,9 @@ http      = "1"
 if-addrs = "0.15.0"
 url = "2"
 percent-encoding = "2"
+# SHA-256 for trust-on-first-use (TOFU) certificate pinning (`03-cast-engine.md` §3.1):
+# the first-seen receiver certificate's digest is stored per receiver key.
+sha2 = "0.11"
 # Pure-Rust SMB2/3 client for anonymous network-share streaming (`04-media-proxy.md` §4.4).
 # Empty username/password = guest; the crate exposes ErrorKind::AuthRequired so
 # authentication-required shares fail explicitly instead of prompting.

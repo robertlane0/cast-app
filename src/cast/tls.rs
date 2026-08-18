@@ -11,9 +11,12 @@ use std::time::{Duration, Instant};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme};
+use sha2::Digest;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+use crate::cast::tofu::Fingerprint;
 
 /// TLS handshake deadline (`03-cast-engine.md` §3.2): the handshake SHALL
 /// complete within 5 seconds or the connection attempt SHALL fail.
@@ -70,9 +73,9 @@ pub fn install_crypto_provider() {
 /// A certificate verifier that completes the TLS handshake, including
 /// verification of the server's handshake signature, but skips chain and
 /// hostname trust evaluation (`03-cast-engine.md` §3.1) — Cast receivers use
-/// self-signed certificates and no trust anchor exists.
-///
-/// Hostname/certificate pinning is documented as a future hardening option.
+/// self-signed certificates and no trust anchor exists. Trust is built via
+/// trust-on-first-use pinning instead: see [`crate::cast::tofu`] and
+/// [`peer_fingerprint`].
 #[derive(Debug)]
 struct PermissiveVerifier;
 
@@ -269,6 +272,17 @@ pub async fn connect_with_timeout(
 pub fn close_notify(stream: &mut CastTlsStream) {
     stream.conn.send_close_notify();
     let _ = stream.flush();
+}
+
+/// The SHA-256 fingerprint of the receiver's end-entity certificate as
+/// presented in the completed handshake, used by the TOFU pin store
+/// (`03-cast-engine.md` §3.1). `None` when no certificate was presented.
+pub fn peer_fingerprint(stream: &CastTlsStream) -> Option<Fingerprint> {
+    let end_entity = stream.conn.peer_certificates()?.first()?;
+    let digest = sha2::Sha256::digest(end_entity.as_ref());
+    let mut fingerprint = [0u8; 32];
+    fingerprint.copy_from_slice(&digest);
+    Some(fingerprint)
 }
 
 #[cfg(test)]

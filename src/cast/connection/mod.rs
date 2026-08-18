@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 
 use crate::cast::namespaces::StreamType;
 use crate::cast::tls::TlsError;
+use crate::cast::tofu::PinCheck;
 use crate::state::CastDevice;
 use crate::util::shutdown::Shutdown;
 
@@ -44,9 +45,12 @@ pub struct CastConnection {
 
 impl CastConnection {
     /// Spawn the connection task on the current tokio runtime with default
-    /// timers ([`ConnectionConfig::default`]).
+    /// timers ([`ConnectionConfig::default`]). The connector uses an
+    /// in-memory TOFU store; the backend-facing path constructs
+    /// [`TlsConnector::new`] with the persisted store (see
+    /// [`crate::cast::tofu::TofuStore::load_default`]).
     pub fn start(events: mpsc::UnboundedSender<ConnectionEvent>, shutdown: Shutdown) -> Self {
-        Self::start_with_handle(events, shutdown, TlsConnector).0
+        Self::start_with_handle(events, shutdown, TlsConnector::default()).0
     }
 
     /// Spawn the connection task with an explicit connector, returning the
@@ -124,9 +128,8 @@ impl CastConnection {
 /// dead weight in release builds, never referenced by production code).
 #[doc(hidden)]
 pub mod test_support {
-    use super::{Connector, SharedTransport, TlsError, Transport};
+    use super::{CastDevice, Connector, PinCheck, SharedTransport, TlsError, Transport};
     use std::io::{self, Read, Write};
-    use std::net::SocketAddr;
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
@@ -342,18 +345,25 @@ pub mod test_support {
     }
 
     impl Connector for MockConnector {
-        async fn connect(&self, addr: SocketAddr) -> Result<SharedTransport, TlsError> {
+        async fn connect(
+            &self,
+            _device: &CastDevice,
+        ) -> Result<(SharedTransport, PinCheck), TlsError> {
             let mut state = self.state.lock().expect("no poisoned mock state");
             if state.fail_connections > 0 {
                 state.fail_connections -= 1;
                 return Err(TlsError::Connect {
-                    addr,
+                    addr: _device.addr,
                     source: io::Error::new(io::ErrorKind::ConnectionRefused, "mock: refused"),
                 });
             }
             let pipe = MockPipe::new();
             state.pipes.push(pipe.clone());
-            Ok(Arc::new(Mutex::new(MockTransport { pipe })))
+            // No TLS in the mock: no certificate, no pin check.
+            Ok((
+                Arc::new(Mutex::new(MockTransport { pipe })),
+                PinCheck::Disabled,
+            ))
         }
     }
 }

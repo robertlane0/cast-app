@@ -17,6 +17,7 @@ use tokio::sync::{oneshot, watch};
 use crate::cast::connection::{CastConnection, ConnectionEvent, Connector, TlsConnector};
 use crate::cast::mdns;
 use crate::cast::namespaces::StreamType;
+use crate::cast::tofu::{TofuStore, fingerprint_to_hex};
 use crate::media::lan_ip;
 use crate::media::mime;
 use crate::media::server::{DEFAULT_PORT, MediaServer};
@@ -51,7 +52,11 @@ impl Backend {
         UnboundedSender<AppCommand>,
         UnboundedReceiver<BackendEvent>,
     ) {
-        Self::start_with(mdns::bind_socket(), DEFAULT_PORT, TlsConnector)
+        // TOFU certificate pins persist across runs like SSH host keys
+        // (`03-cast-engine.md` §3.1); a store that fails to load degrades to
+        // an in-memory one, never blocking startup.
+        let connector = TlsConnector::new(std::sync::Arc::new(TofuStore::load_default()));
+        Self::start_with(mdns::bind_socket(), DEFAULT_PORT, connector)
     }
 
     /// Same as [`Backend::start`] with injectable discovery and connector
@@ -547,6 +552,32 @@ fn forward_connection_event(
             let _ = events.send(BackendEvent::ConnectionError(error.to_string()));
         }
         ConnectionEvent::Ready { .. } => {}
+        ConnectionEvent::CertificateMismatch {
+            device,
+            previous,
+            current,
+        } => {
+            // TOFU pin mismatch (`03-cast-engine.md` §3.1): non-fatal by
+            // design — the connection proceeds — but the user must see it.
+            tracing::warn!(
+                device = %device.name,
+                addr = %device.addr,
+                previous = %fingerprint_to_hex(&previous),
+                current = %fingerprint_to_hex(&current),
+                "certificate mismatch forwarded to the GUI",
+            );
+            let _ = events.send(BackendEvent::CertificateWarning(format!(
+                "Security notice: the certificate presented by {} ({}) does not match \
+                 the one first seen for this receiver. SHA-256 changed from {} to {}. \
+                 This may mean the device was replaced or that a man-in-the-middle is \
+                 intercepting the connection. The connection proceeded; see the log \
+                 file for details.",
+                device.name,
+                device.addr,
+                fingerprint_to_hex(&previous),
+                fingerprint_to_hex(&current),
+            )));
+        }
         ConnectionEvent::MediaStatus { playing, buffering } => {
             let _ = events.send(BackendEvent::MediaStatus { playing, buffering });
         }

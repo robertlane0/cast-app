@@ -9,6 +9,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
+use crate::cast::tofu::receiver_key;
 use crate::state::{BackendEvent, CastDevice};
 use crate::util::shutdown::Shutdown;
 
@@ -92,6 +93,9 @@ pub struct DiscoveredDevice {
     pub ip: Ipv4Addr,
     pub port: u16,
     pub name: String,
+    /// mDNS TXT `id=` value when advertised: the receiver's stable hardware
+    /// identifier, used as the TOFU pin key (`03-cast-engine.md` §3.1).
+    pub device_id: Option<String>,
 }
 
 /// Build the mDNS PTR query for `_googlecast._tcp.local`
@@ -302,11 +306,15 @@ pub fn correlate(records: &[DnsRecord]) -> Vec<DiscoveredDevice> {
             .get(&instance_key)
             .and_then(|record| friendly_name_from_txt(record))
             .unwrap_or_else(|| instance_label(&instance));
+        let device_id = txt_by_instance
+            .get(&instance_key)
+            .and_then(|record| id_from_txt(record));
 
         devices.push(DiscoveredDevice {
             ip,
             port: *port,
             name,
+            device_id,
         });
     }
 
@@ -323,6 +331,24 @@ fn friendly_name_from_txt(record: &DnsRecord) -> Option<String> {
             continue;
         };
         if entry[..equals].eq_ignore_ascii_case(b"fn") {
+            return Some(String::from_utf8_lossy(&entry[equals + 1..]).into_owned());
+        }
+    }
+    None
+}
+
+/// Extract the `id=` value from a TXT record: the receiver's stable
+/// hardware identifier, preferred as the TOFU pin key over the friendly
+/// name + IP fallback (`03-cast-engine.md` §2.4, §3.1).
+fn id_from_txt(record: &DnsRecord) -> Option<String> {
+    let RecordData::Txt(strings) = &record.rdata else {
+        return None;
+    };
+    for entry in strings {
+        let Some(equals) = entry.iter().position(|&byte| byte == b'=') else {
+            continue;
+        };
+        if entry[..equals].eq_ignore_ascii_case(b"id") {
             return Some(String::from_utf8_lossy(&entry[equals + 1..]).into_owned());
         }
     }
@@ -351,6 +377,7 @@ fn name_bytes(name: &str) -> Vec<u8> {
 #[derive(Debug)]
 struct DeviceEntry {
     name: String,
+    device_id: Option<String>,
     missed_cycles: u8,
 }
 
@@ -364,8 +391,9 @@ fn upsert_device(
     match devices.get_mut(&key) {
         Some(entry) => {
             entry.missed_cycles = 0;
-            if entry.name != device.name {
+            if entry.name != device.name || entry.device_id != device.device_id {
                 entry.name = device.name;
+                entry.device_id = device.device_id;
                 true
             } else {
                 false
@@ -376,6 +404,7 @@ fn upsert_device(
                 key,
                 DeviceEntry {
                     name: device.name,
+                    device_id: device.device_id,
                     missed_cycles: 0,
                 },
             );
@@ -419,6 +448,7 @@ fn push_snapshot(
             id: format!("{ip}:{port}"),
             name: entry.name.clone(),
             addr: SocketAddr::new(IpAddr::V4(*ip), *port),
+            tofu_key: receiver_key(entry.device_id.as_deref(), &entry.name, *ip),
         })
         .collect();
     receivers.sort_by(|a, b| a.id.cmp(&b.id));
