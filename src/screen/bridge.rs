@@ -712,7 +712,7 @@ fn prepare_portal(
         .select_sources(&session)
         .map_err(|error| error.to_string())?;
     let abort = AbortSignal::new(Arc::clone(&stop), shutdown.clone());
-    let _stream = portal
+    let stream = portal
         .start(&session, &abort)
         .map_err(|error| error.to_string())?;
     let fd = portal
@@ -725,8 +725,18 @@ fn prepare_portal(
         Some(spawner) => spawner,
         None => Arc::new(crate::screen::pipewire::spawn_pipewire_capture),
     };
-    let pw_thread = spawner(fd, Arc::clone(&frames), status_tx, Arc::clone(&pw_stop))
-        .map_err(|error| error.to_string())?;
+    // The capture stream must target the exact node id the portal granted
+    // (`stream.id`); the portal's restricted PipeWire remote otherwise
+    // leaves autoconnect to guess, which fails negotiation right after the
+    // stream reports itself connected.
+    let pw_thread = spawner(
+        fd,
+        stream.id,
+        Arc::clone(&frames),
+        status_tx,
+        Arc::clone(&pw_stop),
+    )
+    .map_err(|error| error.to_string())?;
 
     let format: PwFormat = match wait_for_format(&status_rx, &stop, &shutdown) {
         Ok(format) => format,

@@ -98,6 +98,7 @@ impl PwFormat {
 /// once (and later failures as `Err`), and stop on `stop`.
 pub type PipewireSpawner = dyn Fn(
         OwnedFd,
+        u32,
         Arc<BoundedDropOldest<Vec<u8>>>,
         std::sync::mpsc::Sender<Result<PwFormat, String>>,
         Arc<AtomicBool>,
@@ -107,12 +108,20 @@ pub type PipewireSpawner = dyn Fn(
 
 /// Spawn the PipeWire capture thread for a portal stream fd.
 ///
+/// `node_id` is the PipeWire node id the portal granted for this stream
+/// (`Start()`'s `streams` entry); the capture stream must target it
+/// explicitly; the portal's restricted PipeWire remote otherwise leaves
+/// `pw_stream_connect` to autoconnect to whatever default video node it can
+/// see, which is not guaranteed to be the granted node and fails
+/// negotiation immediately after the stream reports itself connected.
+///
 /// The thread copies frames into `frames` (drop-oldest backpressure) and
 /// reports the negotiated format exactly once through `status`; a failure at
 /// any point after that is delivered as `Err` on the same channel so the
 /// controller can tear the pipeline down.
 pub fn spawn_pipewire_capture(
     fd: OwnedFd,
+    node_id: u32,
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
     status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
     stop: Arc<AtomicBool>,
@@ -120,7 +129,7 @@ pub fn spawn_pipewire_capture(
     std::thread::Builder::new()
         .name("pipewire-capture".to_string())
         .spawn(move || {
-            if let Err(error) = run_pipewire_capture(fd, frames, status, stop) {
+            if let Err(error) = run_pipewire_capture(fd, node_id, frames, status, stop) {
                 tracing::error!(%error, "pipewire capture failed");
             }
         })
@@ -131,6 +140,7 @@ pub fn spawn_pipewire_capture(
 /// stream failure; the thread's only exit is this function returning.
 fn run_pipewire_capture(
     fd: OwnedFd,
+    node_id: u32,
     frames: Arc<BoundedDropOldest<Vec<u8>>>,
     status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
     stop: Arc<AtomicBool>,
@@ -268,7 +278,7 @@ fn run_pipewire_capture(
     stream
         .connect(
             spa::utils::Direction::Input,
-            None,
+            Some(node_id),
             pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )

@@ -626,6 +626,7 @@ mod portal_pipeline {
     /// format immediately, then pushes 32×32 BGR0 frames until stopped.
     fn fake_spawner(
         _fd: OwnedFd,
+        _node_id: u32,
         frames: Arc<BoundedDropOldest<Vec<u8>>>,
         status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
         stop: Arc<AtomicBool>,
@@ -651,6 +652,7 @@ mod portal_pipeline {
     /// error and tear down without ever spawning an encoder.
     fn failing_spawner(
         _fd: OwnedFd,
+        _node_id: u32,
         _frames: Arc<BoundedDropOldest<Vec<u8>>>,
         status: std::sync::mpsc::Sender<Result<PwFormat, String>>,
         stop: Arc<AtomicBool>,
