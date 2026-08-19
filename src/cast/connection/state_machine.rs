@@ -20,7 +20,7 @@ use crate::cast::connection::transport::SharedTransport;
 use crate::cast::connection::writer::send_payload;
 use crate::cast::namespaces::{
     CONNECTION_NS, HEARTBEAT_NS, MEDIA_NS, RECEIVER_ID, RECEIVER_NS, SOURCE_ID, StreamType,
-    TRANSPORT_ID, connect, launch, load, media_destination_id, parse_media_status,
+    TRANSPORT_ID, connect, get_status, launch, load, media_destination_id, parse_media_status,
     parse_receiver_status, pause, ping, play, set_volume, stop,
 };
 use crate::cast::proto::{decode_cast_message, encode_cast_message};
@@ -80,6 +80,9 @@ pub enum Command {
     Stop,
     /// `SET_VOLUME` (`FR-018`).
     SetVolume { level: f32, muted: bool },
+    /// `GET_STATUS` (`03-cast-engine.md` §6.3): request a fresh
+    /// `RECEIVER_STATUS` snapshot on demand.
+    GetStatus,
     /// Full teardown and exit of the connection task.
     Shutdown,
 }
@@ -424,6 +427,15 @@ async fn handle_command(session: &mut Session, command: Command) -> Result<(), i
                 RECEIVER_NS,
                 &set_volume(id, level, muted),
             );
+            send_payload(&session.transport, payload).await
+        }
+        Command::GetStatus => {
+            // (FR-009) On-demand `GET_STATUS` (`03-cast-engine.md` §6.3): a
+            // live session may request a fresh `RECEIVER_STATUS` snapshot in
+            // any phase; the reply refreshes volume/session state through
+            // `route_inbound`.
+            let id = session.next_request();
+            let payload = encode_cast_message(SOURCE_ID, RECEIVER_ID, RECEIVER_NS, &get_status(id));
             send_payload(&session.transport, payload).await
         }
         Command::Select(_) | Command::Shutdown => {

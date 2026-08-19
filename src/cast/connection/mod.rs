@@ -115,6 +115,15 @@ impl CastConnection {
         let _ = self.commands.send(Command::SetVolume { level, muted });
     }
 
+    /// `GET_STATUS` (`03-cast-engine.md` §6.3): request a fresh
+    /// `RECEIVER_STATUS` snapshot on demand — e.g. after an external volume
+    /// change, another client starting/stopping the Default Media Receiver,
+    /// or a reconnect where no unsolicited status has arrived yet. The
+    /// response flows back as `Volume`/`Ready` events.
+    pub fn get_status(&self) {
+        let _ = self.commands.send(Command::GetStatus);
+    }
+
     /// Full teardown (`STOP → STOP_APP → close_notify`) and stop the
     /// connection task.
     pub fn shutdown(&self) {

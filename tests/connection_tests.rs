@@ -56,12 +56,22 @@ fn cast_frame(source: &str, dest: &str, ns: &str, payload: &str) -> Vec<u8> {
 }
 
 fn receiver_status_frame(transport_id: &str, session_id: &str, level: f64, muted: bool) -> Vec<u8> {
+    receiver_status_frame_id(0, transport_id, session_id, level, muted)
+}
+
+fn receiver_status_frame_id(
+    request_id: u32,
+    transport_id: &str,
+    session_id: &str,
+    level: f64,
+    muted: bool,
+) -> Vec<u8> {
     cast_frame(
         RECEIVER_ID,
         SOURCE_ID,
         RECEIVER_NS,
         &format!(
-            r#"{{"type":"RECEIVER_STATUS","requestId":0,"status":{{"applications":[{{"appId":"CC1AD845","sessionId":"{session_id}","transportId":"{transport_id}"}}],"volume":{{"level":{level},"muted":{muted}}}}}}}"#,
+            r#"{{"type":"RECEIVER_STATUS","requestId":{request_id},"status":{{"applications":[{{"appId":"CC1AD845","sessionId":"{session_id}","transportId":"{transport_id}"}}],"volume":{{"level":{level},"muted":{muted}}}}}}}"#,
         ),
     )
 }
@@ -444,6 +454,90 @@ async fn volume_command_and_event_roundtrip() {
         }
         other => panic!("expected Volume event, got {other:?}"),
     }
+
+    commands_tx.send(Command::Shutdown).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("task exits after shutdown")
+        .expect("task did not panic");
+}
+
+/// `GET_STATUS` reaches the receiver namespace with a fresh `requestId`
+/// (registered in the pending map) and the correlated `RECEIVER_STATUS`
+/// reply refreshes volume/session/application state
+/// (`03-cast-engine.md` §6.3).
+#[tokio::test(flavor = "multi_thread")]
+async fn get_status_roundtrip_refreshes_receiver_state() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (commands_tx, commands_rx) = mpsc::unbounded_channel();
+    let shutdown = Shutdown::new();
+    let connector = MockConnector::new();
+    let task = tokio::spawn(run(
+        commands_rx,
+        events_tx,
+        shutdown,
+        connector.clone(),
+        quiet_config(),
+    ));
+
+    commands_tx.send(Command::Select(test_device())).unwrap();
+    expect_connected(&mut events_rx).await;
+    let pipe = connector.last_pipe().expect("pipe created on connect");
+    drain_wire(&pipe, Duration::from_millis(200)).await; // CONNECT
+
+    commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
+    drain_wire(&pipe, Duration::from_millis(200)).await; // LAUNCH (requestId 1)
+    pipe.push_incoming(&receiver_status_frame_id(1, "t-1", "s-1", 0.3, false));
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::Ready { .. } => {}
+        other => panic!("expected Ready, got {other:?}"),
+    }
+    // The status also carried the initial volume (0.3): drain it.
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::Volume { level, .. } => assert!((level - 0.3).abs() < 0.001),
+        other => panic!("expected Volume from status, got {other:?}"),
+    }
+
+    // GET_STATUS → receiver namespace → receiver-0 destination → GET_STATUS
+    // JSON with a fresh requestId (allocated through the pending map).
+    commands_tx.send(Command::GetStatus).unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(300)).await;
+    assert_eq!(messages.len(), 1, "one GET_STATUS on the wire");
+    assert_eq!(messages[0].namespace, RECEIVER_NS);
+    assert_eq!(messages[0].destination_id, RECEIVER_ID);
+    let payload = serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap();
+    assert_eq!(payload["type"], "GET_STATUS");
+    assert_eq!(
+        payload["requestId"], 2,
+        "next id after LAUNCH's requestId 1"
+    );
+
+    // A correlated RECEIVER_STATUS (matching requestId 2) refreshes
+    // volume/session/application state.
+    pipe.push_incoming(&receiver_status_frame_id(2, "t-2", "s-2", 0.7, true));
+    match expect_event(&mut events_rx).await {
+        ConnectionEvent::Volume { level, muted } => {
+            assert!((level - 0.7).abs() < 0.001);
+            assert!(muted);
+        }
+        other => panic!("expected refreshed Volume, got {other:?}"),
+    }
+
+    // The refreshed session state drives the next LOAD's destination.
+    commands_tx
+        .send(Command::Load {
+            content_id: "http://10.0.0.5:8080/stream".to_string(),
+            content_type: "video/mp4".to_string(),
+            stream_type: StreamType::Buffered,
+        })
+        .unwrap();
+    let messages = drain_messages(&pipe, Duration::from_millis(300)).await;
+    assert_eq!(messages.len(), 1, "one LOAD on the wire");
+    assert_eq!(
+        messages[0].destination_id,
+        media_destination_id("t-2"),
+        "LOAD goes to the transportId refreshed by GET_STATUS"
+    );
 
     commands_tx.send(Command::Shutdown).unwrap();
     tokio::time::timeout(Duration::from_secs(2), task)
