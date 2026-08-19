@@ -71,6 +71,11 @@ pub fn varint_decode(bytes: &[u8]) -> Result<(u64, usize), ProtoError> {
         if index >= 10 {
             return Err(ProtoError::VarintOverflow);
         }
+        // The 10th byte can only contribute bit 63; payload bits above bit 0
+        // would silently shift out of u64, so reject them before OR-ing.
+        if index == 9 && (byte & 0x7F) > 0x01 {
+            return Err(ProtoError::VarintOverflow);
+        }
         value |= ((byte & 0x7F) as u64) << (7 * index);
         if byte & 0x80 == 0 {
             return Ok((value, index + 1));
@@ -266,6 +271,22 @@ mod tests {
         );
         assert_eq!(varint_decode(&[0x80]), Err(ProtoError::UnexpectedEnd(1)));
         assert_eq!(varint_decode(&[]), Err(ProtoError::UnexpectedEnd(0)));
+    }
+
+    #[test]
+    fn varint_tenth_byte_past_bit_63_is_overflow() {
+        // u64::MAX's 10-byte encoding ends with 0x01, contributing exactly
+        // bit 63. A tenth byte with payload bits above bit 0 (0x02..=0x7F)
+        // would silently shift out of u64, so the decoder must reject it
+        // rather than return a truncated value.
+        assert_eq!(
+            varint_decode(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02]),
+            Err(ProtoError::VarintOverflow)
+        );
+        assert_eq!(
+            varint_decode(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F]),
+            Err(ProtoError::VarintOverflow)
+        );
     }
 
     /// The expected encoding of the canonical CONNECT message payload
