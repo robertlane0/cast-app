@@ -205,9 +205,11 @@ impl Session {
         }
     }
 
-    /// Allocate a request ID and register it as pending (`FR-021`).
+    /// Allocate a request ID and register it as pending (`FR-021`). The
+    /// allocator skips IDs with outstanding requests, so the insert cannot
+    /// be a duplicate.
     pub(super) fn next_request(&mut self) -> u32 {
-        let id = self.request_id.allocate();
+        let id = self.request_id.allocate(&self.pending);
         self.pending.insert(id, Instant::now());
         id
     }

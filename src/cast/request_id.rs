@@ -13,7 +13,9 @@ pub const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::fr
 
 /// Allocates per-connection monotonic `u32` request IDs
 /// (`03-cast-engine.md` §6.0). Wraps from `u32::MAX` back to 1 so ID 0 is
-/// never handed out (0 signals "no request" in some receivers).
+/// never handed out (0 signals "no request" in some receivers), and skips
+/// IDs with outstanding requests so a wrap can never reuse a still-pending
+/// ID.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestId {
     next: u32,
@@ -25,18 +27,34 @@ impl RequestId {
         Self { next: 1 }
     }
 
-    /// Allocate the next request ID.
+    /// Allocate the next request ID that is not currently pending.
     ///
     /// (FR-021) Every request SHALL carry a `requestId`; this counter is the
     /// per-connection source of those IDs.
-    pub fn allocate(&mut self) -> u32 {
-        let id = self.next;
-        self.next = if self.next == u32::MAX {
-            1
-        } else {
-            self.next + 1
-        };
-        id
+    ///
+    /// The sequence wraps from `u32::MAX` to 1 (a full cycle of 2^32-1
+    /// IDs). Pending IDs are skipped, so a wrap-around cannot collide with
+    /// a request whose response has not yet arrived (or expired).
+    pub fn allocate(&mut self, pending: &PendingMap) -> u32 {
+        let start = self.next;
+        loop {
+            let id = self.next;
+            self.next = if self.next == u32::MAX {
+                1
+            } else {
+                self.next + 1
+            };
+            if !pending.is_pending(id) {
+                return id;
+            }
+            if self.next == start {
+                // Every non-zero ID is pending. That needs all 2^32-1 IDs
+                // registered at once, which cannot happen before memory
+                // exhaustion given per-entry 5 s timeouts, so this is
+                // reachable-never; panic rather than hand out 0.
+                panic!("request ID space exhausted: all 2^32-1 IDs pending");
+            }
+        }
     }
 }
 
@@ -135,9 +153,10 @@ mod tests {
     fn ids_are_monotonic_and_never_zero() {
         // (FR-021) Monotonic sequence starting at 1.
         let mut ids = RequestId::new();
+        let pending = PendingMap::with_default_timeout();
         let mut previous = 0u32;
         for _ in 0..10_000 {
-            let id = ids.allocate();
+            let id = ids.allocate(&pending);
             assert_ne!(id, 0, "ID 0 is never allocated");
             assert!(id > previous || previous == u32::MAX, "monotonic increase");
             previous = id;
@@ -147,9 +166,38 @@ mod tests {
     #[test]
     fn sequence_wraps_at_u32_max() {
         let mut ids = RequestId { next: u32::MAX };
-        assert_eq!(ids.allocate(), u32::MAX);
-        assert_eq!(ids.allocate(), 1, "wraps to 1, skipping 0");
-        assert_eq!(ids.allocate(), 2);
+        let pending = PendingMap::with_default_timeout();
+        assert_eq!(ids.allocate(&pending), u32::MAX);
+        assert_eq!(ids.allocate(&pending), 1, "wraps to 1, skipping 0");
+        assert_eq!(ids.allocate(&pending), 2);
+    }
+
+    #[test]
+    fn wrap_skips_still_pending_ids() {
+        // (FR-021) After a wrap the sequence revisits IDs; one with an
+        // outstanding request must not be reused.
+        let mut pending = PendingMap::with_default_timeout();
+        let now = Instant::now();
+        assert!(
+            pending.insert(u32::MAX, now),
+            "the wrap-around ID is pending"
+        );
+
+        let mut ids = RequestId { next: u32::MAX };
+        assert_eq!(
+            ids.allocate(&pending),
+            1,
+            "u32::MAX is pending, so the wrap skips to 1"
+        );
+        assert_eq!(ids.allocate(&pending), 2);
+
+        pending.resolve(u32::MAX);
+        let mut ids = RequestId { next: u32::MAX };
+        assert_eq!(
+            ids.allocate(&pending),
+            u32::MAX,
+            "once resolved, u32::MAX is allocatable again"
+        );
     }
 
     #[test]

@@ -22,7 +22,8 @@ use tokio::time::Instant;
 #[test]
 fn request_ids_are_monotonic() {
     let mut ids = RequestId::new();
-    let allocated: Vec<u32> = (0..100).map(|_| ids.allocate()).collect();
+    let pending = PendingMap::with_default_timeout();
+    let allocated: Vec<u32> = (0..100).map(|_| ids.allocate(&pending)).collect();
     assert_eq!(allocated, (1..=100).collect::<Vec<u32>>());
 }
 
