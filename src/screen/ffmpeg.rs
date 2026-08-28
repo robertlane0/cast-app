@@ -210,6 +210,8 @@ pub(crate) fn encoder_args(width: u32, height: u32, pix_fmt: &str) -> Vec<String
         "-".into(),
         "-c:v".into(),
         "libx264".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
         "-preset".into(),
         "ultrafast".into(),
         "-tune".into(),
