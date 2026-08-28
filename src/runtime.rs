@@ -159,6 +159,16 @@ impl SupervisorState {
                 self.cast.select(device);
                 self.rebind_to_lan_ip().await;
             }
+            AppCommand::ManualConnect(addr) => {
+                // Manual IP[:port] without mDNS – e.g. emulator via `adb
+                // forward tcp:18009 tcp:8009` at `127.0.0.1:18009`. Reuse the
+                // same LAN-IP and selection path as discovered receivers; the
+                // `CAST_E2E_RECEIVER` env-var is the test equivalent.
+                let device = crate::state::CastDevice::from_manual_addr(addr);
+                self.lan_ip = lan_ip::select_lan_ip(Some(device.addr.ip()));
+                self.cast.select(device);
+                self.rebind_to_lan_ip().await;
+            }
             AppCommand::BindFallback(consent) => {
                 self.fallback_pending = false;
                 if consent {

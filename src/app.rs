@@ -141,6 +141,10 @@ pub struct CastDashboard {
     proxy_port: u16,
     port_draft: u16,
     file_picker: Option<FilePickerFuture>,
+    manual_ip: String,
+    manual_port: String,
+    manual_error: Option<String>,
+    manual_open: bool,
 }
 
 impl CastDashboard {
@@ -180,6 +184,10 @@ impl CastDashboard {
             proxy_port: 8080,
             port_draft: 8080,
             file_picker: None,
+            manual_ip: String::new(),
+            manual_port: String::new(),
+            manual_error: None,
+            manual_open: false,
         }
     }
 
@@ -298,6 +306,27 @@ impl CastDashboard {
     pub fn retry_discovery(&mut self) {
         self.discovery = DiscoveryState::Scanning;
         self.dispatch(AppCommand::Rescan);
+    }
+
+    /// Validate the manual IP/port fields and dispatch `ManualConnect`.
+    /// Returns `true` when a command was dispatched.
+    pub fn try_manual_connect(&mut self) -> bool {
+        match crate::state::parse_manual_addr(&self.manual_ip, &self.manual_port) {
+            Ok(addr) => {
+                self.manual_error = None;
+                // Mirror the optimistic selection in `select_receiver` so the
+                // status strip updates immediately; the backend will confirm
+                // via `ReceiverConnected` or `ConnectionError`.
+                let device = crate::state::CastDevice::from_manual_addr(addr);
+                self.selected_receiver = Some(device.clone());
+                self.dispatch(AppCommand::ManualConnect(addr));
+                true
+            }
+            Err(message) => {
+                self.manual_error = Some(message);
+                false
+            }
+        }
     }
 
     /// Switch the source tab and dispatch `SelectSource` (`02-gui.md` §3.2).
@@ -585,6 +614,68 @@ impl CastDashboard {
     fn receivers_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Receivers");
         ui.add_space(4.0);
+
+        let manual_label = if self.manual_open {
+            "Manual connection ▾"
+        } else {
+            "Manual connection ▸"
+        };
+        if ui.button(manual_label).clicked() {
+            self.manual_open = !self.manual_open;
+        }
+        if self.manual_open {
+            ui.group(|ui| {
+                ui.label(
+                    egui::RichText::new("Direct IP without mDNS")
+                        .weak()
+                        .size(10.0),
+                );
+                ui.add_space(2.0);
+                let ip_response = ui.add(
+                    egui::TextEdit::singleline(&mut self.manual_ip)
+                        .hint_text("IP, e.g. 127.0.0.1 or 127.0.0.1:18009")
+                        .desired_width(220.0),
+                );
+                if ip_response.changed() {
+                    self.manual_error = None;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Port");
+                    let port_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.manual_port)
+                            .hint_text("8009")
+                            .desired_width(70.0),
+                    );
+                    if port_response.changed() {
+                        self.manual_error = None;
+                    }
+                    let can_connect = !self.manual_ip.trim().is_empty();
+                    if ui
+                        .add_enabled(can_connect, egui::Button::new("Connect"))
+                        .clicked()
+                    {
+                        self.try_manual_connect();
+                    }
+                });
+                if self.manual_port.trim().is_empty() && !self.manual_ip.trim().is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Default port {} will be used",
+                            crate::state::DEFAULT_CAST_PORT
+                        ))
+                        .weak()
+                        .size(10.0),
+                    );
+                }
+                if let Some(error) = self.manual_error.clone() {
+                    ui.colored_label(egui::Color32::RED, error);
+                }
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+        }
+
         match &self.discovery {
             DiscoveryState::Scanning => {
                 ui.horizontal(|ui| {
