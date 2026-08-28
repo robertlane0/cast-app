@@ -386,7 +386,10 @@ async fn handle_command(session: &mut Session, command: Command) -> Result<(), i
                         MEDIA_NS,
                         &load(
                             id,
-                            session.session_id.as_deref().expect("Ready/Streaming requires app session"),
+                            session
+                                .session_id
+                                .as_deref()
+                                .expect("Ready/Streaming requires app session"),
                             &content_id,
                             &content_type,
                             stream_type,
@@ -496,7 +499,10 @@ async fn dispatch_pending(session: &mut Session, pending: PendingCommand) -> Res
                 MEDIA_NS,
                 &load(
                     id,
-                    session.session_id.as_deref().expect("Ready/Streaming requires app session"),
+                    session
+                        .session_id
+                        .as_deref()
+                        .expect("Ready/Streaming requires app session"),
                     &content_id,
                     &content_type,
                     stream_type,

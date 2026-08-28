@@ -286,7 +286,12 @@ impl ScreenCast for ZbusScreenCast {
         let abort = AbortSignal::new(Arc::new(AtomicBool::new(false)), Shutdown::new());
         async_io::block_on(async {
             let (code, _results) = self
-                .call_and_wait("SelectSources", &(session, options), |_results| true, &abort)
+                .call_and_wait(
+                    "SelectSources",
+                    &(session, options),
+                    |_results| true,
+                    &abort,
+                )
                 .await?;
             check_code(code, "SelectSources")
         })
