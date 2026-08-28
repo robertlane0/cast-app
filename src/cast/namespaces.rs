@@ -35,8 +35,43 @@ pub const MEDIA_NS: &str = "urn:x-cast:com.google.cast.media";
 
 /// Media destination ID derived from the `transportId` in the
 /// `RECEIVER_STATUS` response to `LAUNCH` (`03-cast-engine.md` §6.0).
+///
+/// Chromecast receivers expect the prefixed form `transport-<transportId>`,
+/// while Android TV (including the `sdk_google_atv_x86` emulator reachable
+/// via `adb`) exposes the Default Media Receiver on the raw `transportId`
+/// UUID itself. The raw UUID is a 36-character `8-4-4-4-12` hex string; for
+/// that shape we return the ID verbatim, otherwise we prefix as the spec
+/// dictates. This keeps both real Chromecasts (`web-9`, etc.) and the
+/// Android TV emulator (`0bee6ad3-...`) working without configuration.
 pub fn media_destination_id(transport_id: &str) -> String {
-    format!("transport-{transport_id}")
+    if is_uuid_transport_id(transport_id) {
+        transport_id.to_string()
+    } else {
+        format!("transport-{transport_id}")
+    }
+}
+
+/// Android TV's Cast receiver (both devices and the `adb` emulator) uses a
+/// UUID `transportId`/`sessionId` and addresses that channel directly,
+/// whereas Chromecast uses short IDs like `web-9` behind the
+/// `transport-` prefix.
+fn is_uuid_transport_id(id: &str) -> bool {
+    if id.len() != 36 {
+        return false;
+    }
+    let bytes = id.as_bytes();
+    if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+        return false;
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            continue;
+        }
+        if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------

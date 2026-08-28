@@ -532,9 +532,15 @@ async fn get_status_roundtrip_refreshes_receiver_state() {
         })
         .unwrap();
     let messages = drain_messages(&pipe, Duration::from_millis(300)).await;
-    assert_eq!(messages.len(), 1, "one LOAD on the wire");
+    assert_eq!(messages.len(), 2, "CONNECT then LOAD on the wire");
+    assert_eq!(messages[0].namespace, CONNECTION_NS);
+    assert_eq!(messages[0].destination_id, media_destination_id("t-2"));
     assert_eq!(
-        messages[0].destination_id,
+        serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
+        "CONNECT"
+    );
+    assert_eq!(
+        messages[1].destination_id,
         media_destination_id("t-2"),
         "LOAD goes to the transportId refreshed by GET_STATUS"
     );
@@ -634,7 +640,8 @@ async fn lifecycle_state_transitions_with_mock_transport() {
     let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
     assert_eq!(messages.len(), 1, "only CONNECT after establishing");
     assert_eq!(messages[0].namespace, CONNECTION_NS);
-    assert_eq!(messages[0].destination_id, TRANSPORT_ID);
+    // Android TV (adb emulator) requires `receiver-0`; Chromecast also accepts it.
+    assert_eq!(messages[0].destination_id, RECEIVER_ID);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
         "CONNECT"
@@ -675,14 +682,18 @@ async fn lifecycle_state_transitions_with_mock_transport() {
         })
         .unwrap();
     let messages = drain_messages(&pipe, Duration::from_millis(500)).await;
-    assert_eq!(
-        messages.len(),
-        1,
-        "LOAD is queued until Ready then dispatched"
-    );
+    // Android TV requires an explicit CONNECT to the media channel before
+    // the media namespace message; Chromecast tolerates the extra CONNECT.
+    assert_eq!(messages.len(), 2, "CONNECT to media channel then LOAD");
+    assert_eq!(messages[0].namespace, CONNECTION_NS);
     assert_eq!(messages[0].destination_id, media_destination_id("t-42"));
-    assert_eq!(messages[0].namespace, MEDIA_NS);
-    let load = serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&messages[0].payload_utf8).unwrap()["type"],
+        "CONNECT"
+    );
+    assert_eq!(messages[1].destination_id, media_destination_id("t-42"));
+    assert_eq!(messages[1].namespace, MEDIA_NS);
+    let load = serde_json::from_str::<serde_json::Value>(&messages[1].payload_utf8).unwrap();
     assert_eq!(load["type"], "LOAD");
     assert_eq!(load["media"]["contentId"], "http://10.0.0.5:8080/stream");
     assert_eq!(load["media"]["streamType"], "BUFFERED");

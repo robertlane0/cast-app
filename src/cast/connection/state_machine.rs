@@ -367,8 +367,19 @@ async fn handle_command(session: &mut Session, command: Command) -> Result<(), i
         } => {
             match session.phase {
                 Phase::Ready | Phase::Streaming => {
-                    let id = session.next_request();
+                    // Android TV (including the emulator) requires an explicit
+                    // virtual connection to the media channel before any media
+                    // namespace message. The initial session CONNECT targets
+                    // `receiver-0`; the app channel at
+                    // `transportId` (UUID on Android TV, `transport-<id>` on
+                    // Chromecast – see `media_destination_id`) must be
+                    // CONNECTed separately. This is idempotent on receivers
+                    // that don't require it.
                     let destination = session.media_destination();
+                    let connect_payload =
+                        encode_cast_message(SOURCE_ID, &destination, CONNECTION_NS, &connect());
+                    send_payload(&session.transport, connect_payload).await?;
+                    let id = session.next_request();
                     let payload = encode_cast_message(
                         SOURCE_ID,
                         &destination,
@@ -447,9 +458,11 @@ async fn handle_command(session: &mut Session, command: Command) -> Result<(), i
 }
 
 impl Session {
-    /// The media namespace destination: `transport-<sessionId>`
-    /// (`03-cast-engine.md` §6.0). Falls back to the transport ID while the
-    /// session is not yet launched.
+    /// The media namespace destination. For Chromecast the spec's
+    /// `transport-<transportId>` form is required; for Android TV (including
+    /// the `adb` emulator) the raw UUID is required. `media_destination_id`
+    /// handles the distinction. Falls back to `transport-0` while the session
+    /// is not yet launched.
     pub(super) fn media_destination(&self) -> String {
         match self.transport_id.as_deref() {
             Some(transport_id) => media_destination_id(transport_id),
@@ -466,8 +479,11 @@ async fn dispatch_pending(session: &mut Session, pending: PendingCommand) -> Res
             content_type,
             stream_type,
         } => {
-            let id = session.next_request();
             let destination = session.media_destination();
+            let connect_payload =
+                encode_cast_message(SOURCE_ID, &destination, CONNECTION_NS, &connect());
+            send_payload(&session.transport, connect_payload).await?;
+            let id = session.next_request();
             let payload = encode_cast_message(
                 SOURCE_ID,
                 &destination,
@@ -592,8 +608,12 @@ async fn establish<C: crate::cast::connection::transport::Connector>(
     }
 
     // CONNECT before the reader spawns so a failed write cannot leak a
-    // blocked reader thread.
-    let payload = encode_cast_message(SOURCE_ID, TRANSPORT_ID, CONNECTION_NS, &connect());
+    // blocked reader thread. Android TV (including the adb emulator) requires
+    // the initial connection to target `receiver-0`; the spec's `transport-0`
+    // is rejected with "CONNECT not allowed on endpoint: transport-0" and a
+    // CLOSE. Physical Chromecasts also accept `receiver-0`, so this is the
+    // compatible choice for both.
+    let payload = encode_cast_message(SOURCE_ID, RECEIVER_ID, CONNECTION_NS, &connect());
     if let Err(error) = send_payload(&transport, payload).await {
         return Err(ConnectionError::Tls {
             addr: device.addr,
