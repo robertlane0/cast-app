@@ -384,7 +384,13 @@ async fn handle_command(session: &mut Session, command: Command) -> Result<(), i
                         SOURCE_ID,
                         &destination,
                         MEDIA_NS,
-                        &load(id, &content_id, &content_type, stream_type),
+                        &load(
+                            id,
+                            session.session_id.as_deref().expect("Ready/Streaming requires app session"),
+                            &content_id,
+                            &content_type,
+                            stream_type,
+                        ),
                     );
                     session.phase = Phase::Streaming;
                     send_payload(&session.transport, payload).await
@@ -488,7 +494,13 @@ async fn dispatch_pending(session: &mut Session, pending: PendingCommand) -> Res
                 SOURCE_ID,
                 &destination,
                 MEDIA_NS,
-                &load(id, &content_id, &content_type, stream_type),
+                &load(
+                    id,
+                    session.session_id.as_deref().expect("Ready/Streaming requires app session"),
+                    &content_id,
+                    &content_type,
+                    stream_type,
+                ),
             );
             session.phase = Phase::Streaming;
             send_payload(&session.transport, payload).await

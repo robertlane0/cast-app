@@ -108,11 +108,25 @@ fn render(value: Value) -> String {
 }
 
 /// Connection-namespace `CONNECT` (`03-cast-engine.md` §6.1). Per the spec
-/// this message carries no `requestId`.
+/// this message carries no `requestId`. A strong virtual connection with
+/// sender metadata is required when targeting the platform receiver
+/// (`receiver-0`).
 ///
 /// (FR-007) Send Cast connection `CONNECT`.
 pub fn connect() -> String {
-    render(json!({"type": "CONNECT"}))
+    render(json!({
+        "type": "CONNECT",
+        "origin": {},
+        "userAgent": concat!("cast-app/", env!("CARGO_PKG_VERSION")),
+        "connType": 0,
+        "senderInfo": {
+            "sdkType": 2,
+            "version": env!("CARGO_PKG_VERSION"),
+            "browserVersion": env!("CARGO_PKG_VERSION"),
+            "platform": 6,
+            "connectionType": 1,
+        },
+    }))
 }
 
 /// Heartbeat-namespace `PING` (`03-cast-engine.md` §6.2). Per the spec this
@@ -170,6 +184,7 @@ pub fn stop_app(request_id: u32, session_id: &str) -> String {
 /// (FR-020) Send media-namespace `LOAD` with the local proxy URL.
 pub fn load(
     request_id: u32,
+    session_id: &str,
     content_id: &str,
     content_type: &str,
     stream_type: StreamType,
@@ -184,6 +199,7 @@ pub fn load(
         },
         "autoplay": true,
         "currentTime": 0,
+        "sessionId": session_id,
     }))
 }
 

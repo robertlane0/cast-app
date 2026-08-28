@@ -289,12 +289,13 @@ mod tests {
         );
     }
 
-    /// The expected encoding of the canonical CONNECT message payload
-    /// `{"type":"CONNECT"}` from `sender-0` to `receiver-0` over
+    /// The expected encoding of the CONNECT message payload from
+    /// `sender-0` to `receiver-0` over
     /// `urn:x-cast:com.google.cast.tp.connection` — bytes hand-derived, not
     /// produced by the code under test.
     fn golden_connect_payload() -> Vec<u8> {
-        vec![
+        let payload = r#"{"type":"CONNECT","origin":{},"userAgent":"cast-app/0.1.0","connType":0,"senderInfo":{"sdkType":2,"version":"0.1.0","browserVersion":"0.1.0","platform":6,"connectionType":1}}"#;
+        let mut bytes = vec![
             0x08, 0x00, // field 1: protocol_version = 0
             0x12, 0x08, b's', b'e', b'n', b'd', b'e', b'r', b'-', b'0', // field 2
             0x1A, 0x0A, b'r', b'e', b'c', b'e', b'i', b'v', b'e', b'r', b'-', b'0', // field 3
@@ -303,21 +304,21 @@ mod tests {
             b'.', b'g', b'o', b'o', b'g', b'l', b'e', b'.', b'c', b'a', b's', b't', b'.', b't',
             b'p', b'.', b'c', b'o', b'n', b'n', b'e', b'c', b't', b'i', b'o', b'n', 0x28,
             0x00, // field 5: payload_type = 0 (STRING)
-            0x32, 0x12, // field 6, length 18
-            b'{', b'"', b't', b'y', b'p', b'e', b'"', b':', b'"', b'C', b'O', b'N', b'N', b'E',
-            b'C', b'T', b'"', b'}',
-        ]
+        ];
+        let payload_len = payload.len();
+        assert!(payload_len < 128);
+        bytes.extend_from_slice(&[0x32, payload_len as u8]);
+        bytes.extend_from_slice(payload.as_bytes());
+        bytes
     }
 
     #[test]
     fn encode_matches_golden_connect_message() {
-        // (FR-020) The encoder produces exactly the hand-derived bytes for
-        // the canonical CONNECT message.
         let encoded = encode_cast_message(
             "sender-0",
             "receiver-0",
             "urn:x-cast:com.google.cast.tp.connection",
-            r#"{"type":"CONNECT"}"#,
+            r#"{"type":"CONNECT","origin":{},"userAgent":"cast-app/0.1.0","connType":0,"senderInfo":{"sdkType":2,"version":"0.1.0","browserVersion":"0.1.0","platform":6,"connectionType":1}}"#,
         );
         assert_eq!(encoded, golden_connect_payload());
     }
@@ -333,7 +334,10 @@ mod tests {
             "urn:x-cast:com.google.cast.tp.connection"
         );
         assert_eq!(message.payload_type, PayloadType::String);
-        assert_eq!(message.payload_utf8, r#"{"type":"CONNECT"}"#);
+        assert_eq!(
+            message.payload_utf8,
+            r#"{"type":"CONNECT","origin":{},"userAgent":"cast-app/0.1.0","connType":0,"senderInfo":{"sdkType":2,"version":"0.1.0","browserVersion":"0.1.0","platform":6,"connectionType":1}}"#
+        );
     }
 
     #[test]
@@ -344,7 +348,10 @@ mod tests {
         bytes.extend_from_slice(&[0xA0, 0x06, 0x2A]); // field 100, varint 42
         bytes.extend_from_slice(&[0xAA, 0x06, 0x03, 0x01, 0x02, 0x03]); // field 100, bytes
         let message = decode_cast_message(&bytes).expect("unknown fields skipped");
-        assert_eq!(message.payload_utf8, r#"{"type":"CONNECT"}"#);
+        assert_eq!(
+            message.payload_utf8,
+            r#"{"type":"CONNECT","origin":{},"userAgent":"cast-app/0.1.0","connType":0,"senderInfo":{"sdkType":2,"version":"0.1.0","browserVersion":"0.1.0","platform":6,"connectionType":1}}"#,
+        );
     }
 
     #[test]

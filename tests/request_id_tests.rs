@@ -94,7 +94,18 @@ fn namespace_urns_match_spec() {
 
 #[test]
 fn connect_builds_exact_bytes() {
-    assert_eq!(connect(), r#"{"type":"CONNECT"}"#);
+    assert_eq!(
+        connect(),
+        concat!(
+            r#"{"type":"CONNECT","origin":{},"userAgent":"cast-app/"#,
+            env!("CARGO_PKG_VERSION"),
+            r#"","connType":0,"senderInfo":{"sdkType":2,"version":""#,
+            env!("CARGO_PKG_VERSION"),
+            r#"","browserVersion":""#,
+            env!("CARGO_PKG_VERSION"),
+            r#"","platform":6,"connectionType":1}}"#
+        )
+    );
 }
 
 #[test]
@@ -142,11 +153,12 @@ fn load_builds_exact_bytes() {
     assert_eq!(
         load(
             2,
+            "session-abc",
             "http://192.168.1.42:8080/stream",
             "video/mp4",
             StreamType::Buffered,
         ),
-        r#"{"type":"LOAD","requestId":2,"media":{"contentId":"http://192.168.1.42:8080/stream","contentType":"video/mp4","streamType":"BUFFERED"},"autoplay":true,"currentTime":0}"#,
+        r#"{"type":"LOAD","requestId":2,"media":{"contentId":"http://192.168.1.42:8080/stream","contentType":"video/mp4","streamType":"BUFFERED"},"autoplay":true,"currentTime":0,"sessionId":"session-abc"}"#,
     );
 }
 
@@ -156,6 +168,7 @@ fn load_uses_live_stream_type_for_screen_capture() {
     assert!(
         load(
             2,
+            "session-abc",
             "http://192.168.1.42:8080/stream",
             "video/mp4",
             StreamType::Live
