@@ -388,8 +388,22 @@ fn session_object_path(session: &str) -> Result<ObjectPath<'static>, PortalError
 }
 
 /// Whether the xdg-desktop-portal service is reachable on the session bus
-/// (availability probe for the Wayland Display source). Cheap: one
-/// `name_has_owner` round-trip.
+/// (availability probe for the Wayland Display source).
+///
+/// This probes with `StartServiceByName` rather than `NameHasOwner`.
+/// `NameHasOwner` only reports names that *already* have an owner, but
+/// xdg-desktop-portal is normally registered as a D-Bus-*activatable*
+/// service (a `.service` file), not something guaranteed to be running
+/// up-front. Desktop environments that eagerly launch it at login (GNOME,
+/// KDE) never notice the difference, but on window-manager-only Wayland
+/// sessions (Sway, Hyprland, river, …) nothing starts the portal until a
+/// client actually talks to it — so `NameHasOwner` wrongly reports "no
+/// portal" on exactly the setups where the Display source matters most,
+/// even though a real portal call would auto-start it and work fine.
+/// `StartServiceByName` performs that same on-demand activation (or reports
+/// "already running" if it's already up), so it is the correct probe: a
+/// portal that is merely dormant is now correctly reported as available,
+/// and only a genuinely absent/uninstalled portal returns `false`.
 pub fn portal_available() -> bool {
     let Ok(conn) = zbus::blocking::Connection::session() else {
         return false;
@@ -397,8 +411,15 @@ pub fn portal_available() -> bool {
     let Ok(proxy) = zbus::blocking::fdo::DBusProxy::new(&conn) else {
         return false;
     };
-    let Ok(name) = zbus::names::BusName::try_from(PORTAL_NAME) else {
+    let Ok(name) = zbus::names::WellKnownName::try_from(PORTAL_NAME) else {
         return false;
     };
-    proxy.name_has_owner(name).unwrap_or(false)
+    // Flags are reserved by the D-Bus spec and must be 0.
+    let Ok(code) = proxy.start_service_by_name(name, 0) else {
+        return false;
+    };
+    matches!(
+        zbus::fdo::StartServiceReply::try_from(code),
+        Ok(zbus::fdo::StartServiceReply::Success | zbus::fdo::StartServiceReply::AlreadyRunning)
+    )
 }
