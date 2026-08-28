@@ -275,18 +275,20 @@ impl ScreenCast for ZbusScreenCast {
             ("types".to_string(), Value::from(SOURCE_TYPE_MONITOR)),
             ("multiple".to_string(), Value::from(false)),
         ]);
+        // `SelectSources` never shows a dialog for monitor sources, so a
+        // throwaway abort signal (never fires) is fine here, matching
+        // `create_session`. Like every other portal request, the *real*
+        // outcome only arrives on the async `Request.Response` signal — the
+        // immediate method reply is just the request object path, not a
+        // verdict. Calling `Start` before that signal lands races the
+        // portal's own session-state update and gets rejected (code 2) by
+        // backends that require source selection to have actually applied.
+        let abort = AbortSignal::new(Arc::new(AtomicBool::new(false)), Shutdown::new());
         async_io::block_on(async {
-            let _reply = self
-                .conn
-                .call_method(
-                    Some(PORTAL_NAME),
-                    MAIN_PATH,
-                    Some(SCREENCAST_IFACE),
-                    "SelectSources",
-                    &(session, options),
-                )
+            let (code, _results) = self
+                .call_and_wait("SelectSources", &(session, options), |_results| true, &abort)
                 .await?;
-            Ok(())
+            check_code(code, "SelectSources")
         })
     }
 

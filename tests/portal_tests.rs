@@ -39,6 +39,16 @@ enum StartOutcome {
     Never,
 }
 
+/// How the fake portal's `SelectSources` answers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SelectSourcesOutcome {
+    /// Emit a success response (code 0).
+    #[default]
+    Ok,
+    /// Portal error: the given response code.
+    Rejected(u32),
+}
+
 #[derive(Default)]
 struct FakePortalInner {
     next_request: AtomicU32,
@@ -48,6 +58,7 @@ struct FakePortalInner {
     /// Session paths handed out by CreateSession.
     created_sessions: Mutex<Vec<String>>,
     start_outcome: Mutex<StartOutcome>,
+    select_sources_outcome: Mutex<SelectSourcesOutcome>,
     /// Emit one unrelated Response signal before the real one (KDE reuses
     /// request paths across calls, so the client must skip stale responses).
     stale_response_first: Mutex<bool>,
@@ -125,7 +136,8 @@ impl FakePortal {
         &self,
         session: OwnedObjectPath,
         _options: HashMap<String, OwnedValue>,
-    ) -> zbus::fdo::Result<()> {
+        #[zbus(connection)] conn: &Connection,
+    ) -> zbus::fdo::Result<OwnedObjectPath> {
         // A real portal rejects unknown session handles.
         if !self
             .inner
@@ -138,7 +150,20 @@ impl FakePortal {
                 "unknown session handle".into(),
             ));
         }
-        Ok(())
+        // Real `SelectSources` is a Request method like `CreateSession` and
+        // `Start`: the method reply is only the request object path, and the
+        // actual verdict arrives on the async `Response` signal. The old
+        // fake returned success synchronously and never emitted a signal at
+        // all, which matched the client's old (buggy) fire-and-forget
+        // `select_sources` but not the real portal wire protocol.
+        let request = self.next_request_path();
+        let code = match *self.inner.select_sources_outcome.lock().unwrap() {
+            SelectSourcesOutcome::Ok => 0,
+            SelectSourcesOutcome::Rejected(code) => code,
+        };
+        self.emit_response(conn, &request, code, HashMap::new())
+            .await?;
+        Ok(request)
     }
 
     async fn start(
@@ -326,6 +351,26 @@ fn abort_interrupts_a_never_responding_start() {
     let abort = AbortSignal::new(Arc::new(AtomicBool::new(true)), Shutdown::new());
     let result = client.start(&session, &abort);
     assert!(matches!(result, Err(PortalError::Aborted)));
+}
+
+#[test]
+fn rejected_select_sources_maps_to_rejected() {
+    // Regression test for a bug where the client didn't wait for
+    // `SelectSources`'s `Response` signal at all, so a portal-side rejection
+    // of source selection was silently ignored and the pipeline pressed on
+    // to `Start`, which then failed with an unrelated-looking "rejected"
+    // error instead of surfacing the real cause.
+    let inner = inner();
+    *inner.select_sources_outcome.lock().unwrap() = SelectSourcesOutcome::Rejected(2);
+    let (client, _server) = portal_pair(inner);
+    let session = client
+        .create_session("cast_app_capture")
+        .expect("session handle");
+    let result = client.select_sources(&session);
+    match result {
+        Err(PortalError::Rejected(message)) => assert!(message.contains('2'), "{message}"),
+        other => panic!("expected Rejected, got {other:?}"),
+    }
 }
 
 #[test]
