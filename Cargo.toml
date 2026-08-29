@@ -2,7 +2,7 @@
 name = "cast-app"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 authors = ["Robert Lane"]
 license = "MIT OR Apache-2.0"
 
@@ -18,7 +18,11 @@ e2e-cast = []
 e2e-smb = []
 
 [dependencies]
-eframe = "0.36"            # pin latest stable at impl start
+# `default-features = false` + `glow`: we don't use wgpu directly (no custom
+# render callbacks), and the default `wgpu` renderer drags in wgpu-core,
+# naga, gpu-allocator, etc. solely to duplicate pollster/rustc-hash versions
+# already pulled in elsewhere. `glow` (plain OpenGL) covers our needs.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "web_screen_reader", "x11"] }
 egui   = "0.36"
 rfd    = "0.17"
 tokio  = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "io-util", "process"] }
@@ -65,12 +69,16 @@ parking_lot = "0.12"
 # controller `std::thread` (`zbus::block_on` is `#[doc(hidden)]`).
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.9"
-# 5.13.x is the last line with MSRV ≤ 1.85 (5.19 requires rustc 1.87).
+# Previously capped at `<5.14` to hold the line at rustc 1.85, but eframe's
+# `accesskit` feature already pulls in atspi-common -> zbus_xml, which
+# requires zvariant >=5.13.1 (rust-version 1.87 on crates.io) regardless of
+# this pin. The cap wasn't preserving 1.85 support; it was only desyncing
+# zbus_macros from the zvariant/zvariant_derive generation everything else
+# resolves to, duplicating zvariant_utils, syn, and winnow. Tracking latest
+# keeps the whole zbus workspace on one lineage (see `rust-version` above).
 # `p2p` (not in defaults) powers the fake-portal socket-pair tests.
-zbus = { version = ">=5.13, <5.14", features = ["p2p"] }
-# The proc-macro crate must stay in lockstep with the zbus lib: 5.19's macros
-# emit code referencing `object_server::DispatchResult2`, which 5.13 lacks.
-zbus_macros = ">=5.13, <5.14"
+zbus = { version = "5", features = ["p2p"] }
+zbus_macros = "5"
 async-io = "2"
 
 [dev-dependencies]
