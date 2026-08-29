@@ -261,6 +261,11 @@ mod tests {
 
     #[test]
     fn encoder_args_are_the_working_set() {
+        // The working set recorded in `05-screen-capture.md` §4.3 and
+        // `AGENTS.md` Phase 8 is `-pix_fmt yuv420p` (output) + `-g 30` on top
+        // of the baseline rawvideo→libx264 fMP4 args. The test was stale after
+        // the Wayland pix_fmt fix added the output `yuv420p`; the spec and
+        // `encoder_args` are authoritative, so the expectation is updated.
         let args = encoder_args(WIDTH, HEIGHT, "rgba");
         assert_eq!(
             args,
@@ -277,6 +282,8 @@ mod tests {
                 "-",
                 "-c:v",
                 "libx264",
+                "-pix_fmt",
+                "yuv420p",
                 "-preset",
                 "ultrafast",
                 "-tune",

@@ -284,13 +284,29 @@ fn events_aggregate_and_commands_route() {
     });
 
     // Unresolvable monitor → StreamError (ffmpeg-missing or
-    // monitor-missing: both fail deterministically).
-    command_tx
-        .send(AppCommand::SelectDisplay("no-such-monitor".to_string()))
-        .unwrap();
-    match expect_event(&mut event_rx) {
-        BackendEvent::StreamError(message) => assert!(!message.is_empty()),
-        other => panic!("expected StreamError, got {other:?}"),
+    // monitor-missing: both fail deterministically). On a Wayland session
+    // with the portal usable, the pipeline routes to the PipeWire portal
+    // for the virtual "Screen" and does not validate the monitor name, so
+    // an unknown name does not deterministically fail. The test is
+    // therefore Wayland-aware: it only asserts the error on X11 or when
+    // the portal path is unavailable, matching the implementation's
+    // documented thread boundaries (AGENTS.md Phase 8).
+    let is_wayland = cast_app::screen::capture::is_wayland_session();
+    #[cfg(target_os = "linux")]
+    let portal_usable = cast_app::screen::ffmpeg_discover::ffmpeg_available()
+        && cast_app::screen::portal::portal_available();
+    #[cfg(not(target_os = "linux"))]
+    let portal_usable = false;
+    if is_wayland && portal_usable {
+        eprintln!("skipping unresolvable-monitor StreamError on Wayland portal");
+    } else {
+        command_tx
+            .send(AppCommand::SelectDisplay("no-such-monitor".to_string()))
+            .unwrap();
+        match expect_event(&mut event_rx) {
+            BackendEvent::StreamError(message) => assert!(!message.is_empty()),
+            other => panic!("expected StreamError, got {other:?}"),
+        }
     }
 
     backend.shutdown();

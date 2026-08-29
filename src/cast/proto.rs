@@ -305,9 +305,12 @@ mod tests {
             b'p', b'.', b'c', b'o', b'n', b'n', b'e', b'c', b't', b'i', b'o', b'n', 0x28,
             0x00, // field 5: payload_type = 0 (STRING)
         ];
-        let payload_len = payload.len();
-        assert!(payload_len < 128);
-        bytes.extend_from_slice(&[0x32, payload_len as u8]);
+        // Field 6: payload_utf8 — length is varint-encoded (174 bytes needs
+        // two bytes 0xAE 0x01); the `CONNECT` payload grew from the minimal
+        // `{"type":"CONNECT"}` (18 bytes, single-byte length) to the richer
+        // senderInfo form, so the helper must handle multi-byte lengths.
+        bytes.push(0x32); // field 6, wire type 2
+        bytes.extend_from_slice(&varint_encode(payload.len() as u64));
         bytes.extend_from_slice(payload.as_bytes());
         bytes
     }
