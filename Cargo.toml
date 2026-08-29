@@ -50,6 +50,11 @@ smb2 = "0.18"
 # zbus's `MessageStream` needs `TryStreamExt`, and the abort race needs
 # `future::select`.
 futures-util = "0.3"
+# Fair mutex for the Cast transport (`03-cast-engine.md` §7): `std::sync::Mutex`
+# is not fair and starves writers under continuous inbound traffic. `parking_lot`
+# queues waiters FIFO so a blocked writer always acquires before the reader
+# re-locks, removing the need for the `thread::sleep` barging workaround.
+parking_lot = "0.12"
 
 # Linux-only Wayland screen capture (`05-screen-capture.md` §3.4): the
 # xdg-desktop-portal ScreenCast D-Bus interface (pure-Rust zbus) plus the

@@ -5,7 +5,6 @@
 //! CastV2 frames.
 
 use std::io;
-use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
@@ -14,11 +13,6 @@ use crate::cast::framing::{FrameError, read_frame};
 
 /// Reader read buffer size; frames are accumulated across reads.
 const READ_BUFFER_SIZE: usize = 16 * 1024;
-
-/// Idle-read backoff: after a WouldBlock poll the reader sleeps this long
-/// before re-locking the transport mutex, so a queued writer (which loses
-/// every instant re-lock race — barging) can acquire it deterministically.
-const IDLE_READ_BACKOFF: Duration = Duration::from_millis(5);
 
 // ---------------------------------------------------------------------------
 // Frame accumulation
@@ -113,29 +107,18 @@ fn reader_loop(
                         break;
                     }
                 }
-                // Yield the transport mutex to queued writers after *every*
-                // read cycle, not just idle polls. With continuous inbound
-                // traffic the read never blocks, so without this sleep a
-                // blocked writer would starve indefinitely (barging; see
-                // the WouldBlock arm below).
-                std::thread::sleep(IDLE_READ_BACKOFF);
+                // No sleep needed: `parking_lot::Mutex` is fair (FIFO) so a
+                // writer that blocked while this read held the lock is queued
+                // and will acquire before the reader's next re-lock. The
+                // previous `std::sync::Mutex` barging workaround
+                // (`thread::sleep(IDLE_READ_BACKOFF)`) is no longer required.
             }
-            // Read timeout / would-block: poll shutdown state and retry.
-            //
-            // Sleep before re-locking: the reader re-acquires the transport
-            // mutex within microseconds of an idle poll, which starves
-            // concurrent writers (mutex barging) — a blocked writer loses
-            // the race to the instantly re-locking reader every cycle. A
-            // short sleep opens a scheduling window the writer always wins.
-            // Writers are commands/PINGs (human-scale or 5s cadence), so the
-            // added latency is irrelevant; reads stay bounded by the socket
-            // timeout.
+            // Read timeout / would-block: poll shutdown state and retry. No
+            // sleep is needed for fairness — the fair mutex guarantees a
+            // queued writer wins the next lock.
             Err(error)
                 if error.kind() == io::ErrorKind::WouldBlock
-                    || error.kind() == io::ErrorKind::TimedOut =>
-            {
-                std::thread::sleep(IDLE_READ_BACKOFF);
-            }
+                    || error.kind() == io::ErrorKind::TimedOut => {}
             Err(error) => {
                 tracing::debug!(%error, "transport read ended");
                 break;

@@ -4,8 +4,10 @@
 //! connector with read/write timeouts.
 
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::{Mutex, MutexGuard};
 
 use crate::cast::tls::{self, CastTlsStream, TlsError};
 use crate::cast::tofu::{Fingerprint, PinCheck, TofuStore, fingerprint_to_hex};
@@ -46,15 +48,18 @@ impl Transport for CastTlsStream {
 
 /// The transport shared between the reader thread and `spawn_blocking`
 /// writers. Lock hold times are bounded by [`READ_POLL_INTERVAL`].
+///
+/// `parking_lot::Mutex` is used instead of `std::sync::Mutex` because the
+/// latter is not fair: a reader thread that re-locks microseconds after
+/// releasing can starve a queued writer indefinitely (mutex barging). The
+/// parking_lot mutex queues waiters FIFO so a blocked writer always acquires
+/// before the reader's next re-lock, removing the need for the former
+/// `thread::sleep` workaround in the reader.
 pub type SharedTransport = Arc<Mutex<dyn Transport>>;
 
-/// Lock the shared transport, tolerating a poisoned mutex (the inner state
-/// is still usable — a panicked lock holder never corrupted the socket).
+/// Lock the shared transport. `parking_lot::Mutex` never poisons.
 pub(super) fn lock_transport(transport: &Mutex<dyn Transport>) -> MutexGuard<'_, dyn Transport> {
-    match transport.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    transport.lock()
 }
 
 /// Establishes the TLS transport to a receiver. Pluggable so tests can

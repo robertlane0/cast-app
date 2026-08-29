@@ -715,6 +715,7 @@ dependencies = [
  "futures-util",
  "http",
  "if-addrs",
+ "parking_lot",
  "percent-encoding",
  "pipewire",
  "pretty_assertions",

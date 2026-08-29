@@ -370,7 +370,7 @@ pub mod test_support {
             state.pipes.push(pipe.clone());
             // No TLS in the mock: no certificate, no pin check.
             Ok((
-                Arc::new(Mutex::new(MockTransport { pipe })),
+                Arc::new(parking_lot::Mutex::new(MockTransport { pipe })),
                 PinCheck::Disabled,
             ))
         }
