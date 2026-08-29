@@ -178,11 +178,11 @@ Source and destination IDs:
 
 | Direction | Source ID | Destination ID | Namespaces |
 |---|---|---|---|
-| Transport (client to device) | `source-0` | `transport-0` | connection, heartbeat |
+| Transport (client to device) | `source-0` | `receiver-0` | connection, heartbeat |
 | Receiver (client to device) | `source-0` | `receiver-0` | receiver |
-| Media (client to device) | `source-0` | `transport-<transportId>` | media |
+| Media (client to device) | `source-0` | `transport-<transportId>` or raw `transportId` | media |
 
-The media destination ID is derived from the `transportId` in the `RECEIVER_STATUS` response to `LAUNCH`.
+The media destination ID is derived from the `transportId` in the `RECEIVER_STATUS` response to `LAUNCH`. Chromecast receivers expect the prefixed form `transport-<transportId>`; Android TV (including the `sdk_google_atv_x86` emulator reached via `adb forward`) exposes the Default Media Receiver on the raw UUID `transportId` itself. `media_destination_id` returns the ID verbatim when it is a 36-character `8-4-4-4-12` hex UUID, otherwise it prefixes with `transport-`.
 
 The engine SHALL maintain a per-connection monotonic `u32` request ID. Every request SHALL carry a `requestId`; incoming responses SHALL be correlated to outstanding requests by `requestId`, with a 5-second response timeout after which the request is considered failed and logged.
 
@@ -192,11 +192,21 @@ Namespace:
 
 `urn:x-cast:com.google.cast.tp.connection`
 
-On connection initialization, send:
+On connection initialization, send to `receiver-0` (the initial
+transport):
 
 ```json
-{"type":"CONNECT"}
+{"type":"CONNECT","origin":{},"userAgent":"cast-app/<version>","connType":0,"senderInfo":{"sdkType":2,"version":"<version>","browserVersion":"<version>","platform":6,"connectionType":1}}
 ```
+
+(the minimal `{"type":"CONNECT"}` is also accepted by receivers; the
+implementation sends the richer form with `origin`/`senderInfo` for
+compatibility). Android TV — including the emulator — rejects `CONNECT` to
+`transport-0` with `CLOSE`; both Chromecast and Android TV accept
+`receiver-0`, so it is the compatible destination. An explicit `CONNECT`
+to the media destination (the `transportId`/prefixed form from §6.0) SHALL
+also be sent before the first media-namespace message; receivers that do
+not require it tolerate the extra `CONNECT`.
 
 ### 6.2 Heartbeat
 
@@ -259,7 +269,7 @@ Namespace:
 
 `urn:x-cast:com.google.cast.media`
 
-The engine SHALL send media commands to `transport-<transportId>` with the per-connection `requestId` sequence.
+The engine SHALL send media commands to the media destination from §6.0 (`transport-<transportId>` on Chromecast, raw `transportId` UUID on Android TV) with the per-connection `requestId` sequence. An explicit `CONNECT` to that destination on the connection namespace SHALL be sent immediately before `LOAD` (and before any later media command when not yet connected); the `LOAD` itself then carries a fresh `requestId`.
 
 `LOAD` starts playback of a media URL:
 
@@ -292,15 +302,15 @@ The engine SHALL parse `MEDIA_STATUS` responses and extract at minimum the `play
 At minimum:
 
 ```text
-Discover
+Discover (or ManualConnect IP:port)
   -> Select
   -> Connect TCP
   -> Wrap TLS
-  -> CONNECT
+  -> CONNECT to receiver-0
   -> Start heartbeat
   -> LAUNCH Default Media Receiver
   -> Await RECEIVER_STATUS; extract transportId/sessionId
-  -> LOAD media URL
+  -> CONNECT to media destination, then LOAD media URL
   -> Await MEDIA_STATUS
   -> Send subsequent media/control commands
   -> Teardown: STOP -> STOP_APP -> close_notify -> close socket
@@ -325,9 +335,9 @@ Discover
 - [x] The decoder reads the length prefix and the exact payload length, rejecting frames over 16 MiB.
 - [x] CastMessage serialization does not depend on `prost`.
 - [x] CastMessage deserialization tolerates unknown fields.
-- [x] Connection namespace sends `CONNECT`.
+- [x] Connection namespace sends `CONNECT` to `receiver-0` (and to the media destination before `LOAD`).
 - [x] Heartbeat sends `PING` every 5 seconds and a `PONG` resets the timer.
 - [x] Receiver namespace can issue `LAUNCH` for `CC1AD845`.
-- [x] `RECEIVER_STATUS` `transportId` is used as the media destination ID.
-- [x] Media namespace can send `LOAD` with the proxy URL and `PLAY`/`PAUSE`/`STOP`.
+- [x] `RECEIVER_STATUS` `transportId` is used as the media destination ID (`media_destination_id` handles the `transport-` prefix vs raw UUID).
+- [x] Media namespace can send `LOAD` with the proxy URL and `PLAY`/`PAUSE`/`STOP` (with a preceding `CONNECT` to the media channel).
 - [x] Every request carries a `requestId` and responses are correlated to it.

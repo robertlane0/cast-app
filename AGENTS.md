@@ -77,9 +77,9 @@ license = "MIT OR Apache-2.0"
 # crate is empty without this feature. Run with:
 #   cargo test --features e2e-cast -- --ignored --test-threads=1
 e2e-cast = []
-# Real-network-share end-to-end tests (`tests/integration/smb_e2e.rs`): empty
-# without the feature. Run against a guest-accessible share with:
-#   SMB_E2E_SERVER=nas:445 SMB_E2E_SHARE=media SMB_E2E_PATH=dir/video.mp4 \
+# Real-network-share end-to-end tests (`tests/integration/smb_e2e.rs`): the
+# test crate is empty without this feature. Run with:
+#   SMB_E2E_SERVER=host:445 SMB_E2E_SHARE=guest-share SMB_E2E_PATH=dir/video.mp4 \
 #     cargo test --features e2e-smb --test smb_e2e -- --ignored --test-threads=1
 e2e-smb = []
 
@@ -230,8 +230,8 @@ SMB_E2E_SERVER=nas:445 SMB_E2E_SHARE=media SMB_E2E_PATH=dir/video.mp4 \
 ```
 
 CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
-`fmt --check` → `clippy -D warnings` (default and `e2e-cast` features) →
-`test` → `test --doc` → `e2e-cast` target compiles (`--no-run`) → `build` →
+`fmt --check` → `clippy -D warnings` (default, `e2e-cast`, and `e2e-smb` features) →
+`test` → `test --doc` → `e2e-cast` and `e2e-smb` targets compile (`--no-run`) → `build` →
 `build --release` → `cargo run -p xtask` →
 `cargo deny check`, with the committed `Cargo.lock` uploaded as an artifact.
 
@@ -243,9 +243,9 @@ CI gate (GitHub Actions matrix: `ubuntu-latest`, `windows-latest`, `macos-14`):
 src/
   main.rs                # entrypoint: tracing init, runtime, eframe launch
   lib.rs                 # crate root, `#![forbid(unsafe_code)]`, re-exports
-  state.rs               # CastDevice, SourceTab, AppCommand, BackendEvent
-  app.rs                 # CastDashboard eframe::App impl + UI rendering
-  runtime.rs             # tokio runtime, supervisor, task graph wiring
+  state.rs               # CastDevice (+ from_manual_addr, parse_manual_addr, DEFAULT_CAST_PORT), SourceTab, AppCommand (incl. ManualConnect, BindFallback, Rescan), BackendEvent
+  app.rs                 # CastDashboard eframe::App impl + UI rendering (Manual connection disclosure, try_manual_connect, VolumeThrottle)
+  runtime.rs             # tokio runtime, supervisor, task graph wiring (ManualConnect handling, wildcard-bind consent)
   util/
     mod.rs
     shutdown.rs          # Shutdown token (watch channel)
@@ -259,7 +259,7 @@ src/
     proto.rs             # hand-rolled CastMessage protobuf codec
     request_id.rs        # monotonic u32 + pending-request map w/ 5s timeout
     tofu.rs              # TOFU certificate-pin store: SHA-256 pins keyed by TXT id=/friendlyName+IP, persisted known_hosts.json
-    namespaces.rs        # CONNECT, PING, LAUNCH, GET_STATUS, SET_VOLUME, STOP_APP, LOAD, PLAY, PAUSE, STOP
+    namespaces.rs        # CONNECT (to receiver-0), PING, LAUNCH, GET_STATUS, SET_VOLUME, STOP_APP, LOAD (with media-destination CONNECT), PLAY, PAUSE, STOP; media_destination_id UUID-aware
     connection/
     mod.rs             # facade: CastConnection handle, re-exports, test_support
     transport.rs       # Transport trait, SharedTransport, Connector/TlsConnector (TOFU-aware)
@@ -474,7 +474,7 @@ acceptance criteria pass.
 - [x] `portal.rs` (Linux): pure-zbus `ZbusScreenCast` (`create_session`/`select_sources`/`start`/`open_pipewire_remote`/`close`) with the `Request.Response` signal subscribed before each call and filtered by expected key (stale responses skipped); `AbortSignal` (stop flag + shutdown) interrupts a pending dialog; `portal_available()` via blocking `start_service_by_name` (not `name_has_owner`, which misreports a dormant-but-activatable portal as absent on WM-only Wayland sessions).
 - [x] `pipewire.rs` (Linux): `PwFormat`/`PixFmt` (4-byte formats only, mapped to `-pix_fmt`), `spawn_pipewire_capture` on a dedicated thread driving `Loop::iterate` (pollable), negotiated format reported exactly once over a status channel, later failures as `Err`.
 - [x] `ffmpeg.rs`:
-  - `Command` with spec §4 args (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, zerolatency, fMP4, `pipe:1`) **+ recorded working-set addition `-g 30`** (1 s keyframe interval; x264's default keyint=250 would delay fMP4 fragments ~8 s and stall live output); `encoder_args` takes the platform's `pix_fmt` (`rgba` for xcap, negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland) and `Ffmpeg::spawn_pipewire` drives the portal path.
+  - `Command` with spec §4 args (rawvideo, rgba, `-s WxH`, `-r 30`, libx264 ultrafast, zerolatency, fMP4, `pipe:1`) **+ recorded working-set additions `-pix_fmt yuv420p` (output) and `-g 30`** (1 s keyframe interval; x264's default keyint=250 would delay fMP4 fragments ~8 s and stall live output); `encoder_args` takes the platform's `pix_fmt` (`rgba` for xcap, negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland) and `Ffmpeg::spawn_pipewire` drives the portal path.
   - stdin/stdout piped; stderr captured (50-line tail) for diagnostics.
   - Lifecycle: EOF → wait ≤5 s → kill → reap (`wait_graceful`); unexpected non-zero exit → error.
   - `-movflags frag_keyframe+empty_moov` baseline; `default_base_moof` fallback recorded pending real-receiver validation.
@@ -493,7 +493,7 @@ acceptance criteria pass.
 
 ### Phase 9 — GUI (`app.rs`) ← `02-gui.md`
 - [x] `CastDashboard` struct per spec §4.2.
-- [x] Left panel (~250 px): receiver list with `Scanning` / `No receivers found` / `Error+retry` states; row = name + IP:port.
+- [x] Left panel (~250 px): receiver list with `Scanning` / `No receivers found` / `Error+retry` states; row = name + IP:port; collapsible *Manual connection* disclosure with IP + optional port fields, `try_manual_connect` dispatching `ManualConnect`.
 - [x] Center panel: tabbed `Display` / `Local File` / `Web URL`.
   - Display: dropdown from `DisplaysUpdated`; disabled when no monitors or ffmpeg missing.
   - Local File: `rfd::AsyncFileDialog` with media-type filters.

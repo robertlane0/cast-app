@@ -36,6 +36,7 @@
 | FR-033 | Serve anonymous `smb://host/share/path` network-share URLs through `/stream` with the §3.1 Range policy. | `smb_tests` (fakes) + feature-gated `smb_e2e` |
 | FR-034 | SMB is anonymous-only: URLs with userinfo are rejected; a server rejecting the guest logon fails with `401`; no credentials exist in the app. | `smb_tests` parse/serve tests |
 | FR-037 | TOFU certificate pinning: store the SHA-256 of the first-seen receiver certificate per receiver key (mDNS TXT `id=`, else `friendlyName+IP`), persisted across restarts; warn — never block — on a mismatch in later connections, and never re-pin silently. | `tofu` unit tests + `tls_e2e` TOFU lifecycle + `gui_state_tests` security-notice tests |
+| FR-038 | Manual `IP[:port]` connection without mDNS (`02-gui.md` §3.1): `ManualConnect(SocketAddr)` with `parse_manual_addr` / `DEFAULT_CAST_PORT` and `CastDevice::from_manual_addr`. | `gui_state_tests` manual-connect tests + `runtime_tests` handling |
 
 ## 2. Safety and architecture requirements
 
@@ -159,14 +160,15 @@ Test:
 
 Test state transitions for:
 
-- receiver selection;
+- receiver selection and manual `IP[:port]` connection (`ManualConnect`);
 - source-tab selection;
 - display selection;
 - local-file selection;
 - URL entry (including `smb://` validity and userinfo rejection);
 - transport command dispatch;
 - status-indicator updates from backend events;
-- proxy-port setting validation and dispatch.
+- proxy-port setting validation and dispatch;
+- wildcard-bind consent prompt (`BindFallbackRequested` / `BindFallback`).
 
 ## 4. Integration tests
 
@@ -180,7 +182,7 @@ Minimum scenarios:
 4. Maintain heartbeat.
 5. Launch Default Media Receiver.
 6. Correlate the `LAUNCH` response by `requestId` and extract `transportId`.
-7. Send a media-namespace `LOAD` with the local proxy URL to `transport-<transportId>`.
+7. Send a media-namespace `LOAD` with the local proxy URL to the media destination (`transport-<transportId>` on Chromecast, raw `transportId` UUID on Android TV) after an explicit `CONNECT` to that destination.
 8. Serve a local file.
 9. Seek using an HTTP Range request.
 10. Proxy a remote media URL.
@@ -213,7 +215,7 @@ The implementation is considered aligned with this specification set when all st
 
 TBDs required for production are resolved and reflected in these specifications. The mandatory set is:
 
-- Cast protocol: CastMessage field schema, inbound decoder, `requestId` correlation, source/destination IDs, media-namespace `LOAD` and transport controls, heartbeat/reconnect policy.
+- Cast protocol: CastMessage field schema, inbound decoder, `requestId` correlation, source/destination IDs (incl. `receiver-0` initial `CONNECT` and UUID-aware `media_destination_id`), media-namespace `LOAD` with pre-`CONNECT` and transport controls, heartbeat/reconnect policy.
 - HTTP proxy: bind address and port (interface-restricted, wildcard only after user consent), LAN-IP advertisement, route structure, MIME map, response headers, range policy, `HEAD` support, remote redirect/timeout/error policy, SSRF posture, anonymous SMB share serving (`04-media-proxy.md` §4.4).
 - Screen capture: capture crate, pixel-format conversion, resolution handling, `ffmpeg` discovery and lifecycle, backpressure, shutdown.
 - Concurrency: channel crate, event channel, data ownership, supervision and cancellation.

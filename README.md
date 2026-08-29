@@ -19,9 +19,14 @@ canonical implementation guide.
 ## Features
 
 - mDNS discovery of `_googlecast._tcp.local` receivers (friendly name, IP, port)
+  plus a manual `IP[:port]` connection (e.g. `127.0.0.1:18009` via
+  `adb forward` to the Android TV emulator) behind the *Manual connection*
+  disclosure
 - TLS connection with acceptance of receiver self-signed certificates
+  (TOFU pinning — SHA-256 of the first-seen certificate per receiver)
 - Receiver `LAUNCH` (Default Media Receiver `CC1AD845`), heartbeat keep-alive,
-  reconnect with exponential backoff
+  reconnect with exponential backoff; `CONNECT` targets `receiver-0` for
+  compatibility with both Chromecast and Android TV
 - Media proxy: local-file serving with HTTP `Range` (200/206/416), remote-URL
   proxying, anonymous SMB share serving (`smb://host/share/file`, guest logon
   only — shares requiring authentication fail with `401`), LAN-IP
@@ -97,12 +102,15 @@ cargo run
 
 On a LAN with a Chromecast:
 
-1. Wait ~10 s for the receiver to appear in the left panel.
+1. Wait ~10 s for the receiver to appear in the left panel. If the receiver
+   is not discoverable via mDNS (e.g. an Android TV emulator), open the
+   **Manual connection** disclosure and enter its `IP[:port]` (e.g.
+   `127.0.0.1:18009` via `adb forward tcp:18009 tcp:8009`).
 2. At launch, the app asks whether the media server may bind all interfaces
    (`0.0.0.0`) before a receiver is selected — see *Security* below. If you
    decline, the server binds the selected receiver's interface once you pick
    one.
-3. Select the receiver; the status dot turns green.
+3. Select the receiver (or connect manually); the status dot turns green.
 4. **Local File** tab — pick a media file, then **Play**.
 5. **Web URL** tab — enter an absolute `http(s)://` media URL or an anonymous
    `smb://host/share/dir/file.mp4` network-share URL (no credentials accepted),
@@ -147,15 +155,23 @@ log directory:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
+cargo test --doc
 cargo run -p xtask              # zero `unsafe` tokens in src/, tests/, xtask/
 cargo deny check                   # license + ban list audit
 ```
 
-Real-Chromecast end-to-end tests are feature-gated and ignored by default:
+Real-Chromecast and real-SMB end-to-end tests are feature-gated and ignored
+by default:
 
 ```bash
 cargo test --features e2e-cast -- --ignored --test-threads=1
+# SMB (requires a guest-accessible share)
+SMB_E2E_SERVER=host:445 SMB_E2E_SHARE=guest-share SMB_E2E_PATH=dir/video.mp4 \
+  cargo test --features e2e-smb --test smb_e2e -- --ignored --test-threads=1
 ```
+
+Manual receivers can be exercised without mDNS via the left-panel **Manual
+connection** disclosure, or in `cast_e2e` via `CAST_E2E_RECEIVER=IP:port`.
 
 ## Repository layout
 
@@ -163,15 +179,16 @@ cargo test --features e2e-cast -- --ignored --test-threads=1
 src/
   main.rs        entrypoint: logging, runtime, GUI launch
   lib.rs         crate root
-  state.rs       GUI/backend shared types
-  app.rs         egui dashboard
-  runtime.rs     tokio runtime + supervisor
+  state.rs       GUI/backend shared types (CastDevice, AppCommand incl. ManualConnect, BackendEvent)
+  app.rs         egui dashboard (Manual connection disclosure, try_manual_connect)
+  runtime.rs     tokio runtime + supervisor (ManualConnect handling)
   util/          shutdown token, retry backoff, drop-oldest channels
-  cast/          mDNS, TLS, framing, hand-rolled protobuf, connection state machine
+  cast/          mDNS, TLS (+ TOFU pinning), framing, hand-rolled protobuf, connection state machine
   media/         HTTP proxy: local files, URL proxy, SMB shares, Range, MIME, LAN IP
   screen/        xcap capture thread, Wayland portal/PipeWire client, ffmpeg subprocess, capture→ffmpeg→HTTP bridge
 tests/
-  unit + integration test suites (incl. feature-gated `cast_e2e`)
+  unit + integration test suites (incl. feature-gated cast_e2e and smb_e2e)
+  support/fake_encoder.rs  cross-platform fake encoder binary (ISS-012)
 xtask/           unsafe-scan binary (CI gate)
 specs/           01–07 implementation specifications
 ```

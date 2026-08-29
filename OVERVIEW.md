@@ -16,7 +16,7 @@ Rust 2024’s improved lifetime elision and async closures integrate beautifully
 
 The UI is divided into a centralized dashboard with three primary panels:
 
-* **Target Selection (Left Panel):** Continuously updates a list of discovered Chromecast devices on the local network.
+* **Target Selection (Left Panel):** Continuously updates a list of discovered Chromecast devices on the local network, plus a *Manual connection* disclosure for direct `IP[:port]` entry when mDNS is unavailable (e.g. the Android TV emulator via `adb forward`).
 * **Source Selection (Center Panel):** A tabbed interface allowing the user to select their streaming source:
 * *Display:* A dropdown listing available monitors (e.g., `DP-1`, `HDMI-2`).
 * *Local File:* A native file picker button (via `rfd`, a safe Rust file dialog crate) for video/audio.
@@ -42,7 +42,8 @@ struct CastDashboard {
     event_rx: tokio::sync::mpsc::UnboundedReceiver<BackendEvent>,
 
     // ... plus mirrored backend state (discovery/connection/playback
-    // status, volume throttle, error banner, settings) — see `src/app.rs`
+    // status, volume throttle, error banner, security warning, settings,
+    // manual IP/port fields) — see `src/app.rs`
 }
 ```
 
@@ -59,6 +60,12 @@ Instead of importing a heavyweight mDNS crate, we implement a lightweight DNS pa
 1. The app binds a `std::net::UdpSocket` to `0.0.0.0:0` and joins the IPv4 multicast address `224.0.0.251`.
 2. It sends a standard DNS query for the PTR record `_googlecast._tcp.local`.
 3. The engine safely parses the incoming binary DNS response packet, extracting the device's IP address from the `A` record, the port (usually `8009`) from the `SRV` record, and the friendly device name from the `TXT` record.
+
+When mDNS is unavailable (e.g. an Android TV emulator), the left-panel
+*Manual connection* bypasses discovery: the IP (or `IP:port`) entered there is
+validated by `parse_manual_addr` (`DEFAULT_CAST_PORT = 8009`) and dispatched
+as `ManualConnect`, creating a `CastDevice::from_manual_addr` that flows
+through the same TLS and CastV2 path.
 
 ### 3.2 Transport Layer & Security
 
@@ -95,7 +102,7 @@ fn encode_cast_message(source: &str, dest: &str, namespace: &str, payload: &str)
 
 Once connected, the engine handles the three core Chromecast namespaces via JSON:
 
-* `urn:x-cast:com.google.cast.tp.connection`: Sends `{"type": "CONNECT"}` to initialize.
+* `urn:x-cast:com.google.cast.tp.connection`: Sends `{"type": "CONNECT"}` to `receiver-0` to initialize (compatible with both Chromecast and Android TV; the latter rejects `transport-0`), plus an explicit `CONNECT` to the media destination before the first media message.
 * `urn:x-cast:com.google.cast.tp.heartbeat`: Runs a background Tokio task sending `{"type": "PING"}` every 5 seconds to keep the TLS socket alive.
 * `urn:x-cast:com.google.cast.receiver`: Sends a `LAUNCH` command with the Default Media Receiver App ID (`CC1AD845`).
 
@@ -130,7 +137,8 @@ let mut ffmpeg = Command::new("ffmpeg")
         "-f", "rawvideo", "-pix_fmt", "rgba",
         "-s", "1920x1080", "-r", "30",
         "-i", "-", // Read from stdin
-        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast",
         "-tune", "zerolatency",
         "-g", "30", // 1 s keyframe interval (recorded working set)
         "-f", "mp4", "-movflags", "frag_keyframe+empty_moov",

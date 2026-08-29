@@ -81,14 +81,16 @@ The configuration is:
 -r 30
 -i -
 -c:v libx264
+-pix_fmt yuv420p
 -preset ultrafast
 -tune zerolatency
+-g 30
 -f mp4
 -movflags frag_keyframe+empty_moov
 pipe:1
 ```
 
-with `-s <WxH>` set from the selected monitor's resolution (X11) or the negotiated PipeWire format (Wayland, §3.4), and `-pix_fmt` from the platform: `rgba` for xcap, or the negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland.
+with `-s <WxH>` set from the selected monitor's resolution (X11) or the negotiated PipeWire format (Wayland, §3.4), and the input `-pix_fmt` from the platform: `rgba` for xcap, or the negotiated `rgb0`/`bgr0`/`rgba`/`bgra` on Wayland. `-pix_fmt yuv420p` is the encoder output format for `libx264`; `-g 30` forces a keyframe every second (see §4.3).
 
 The subprocess SHALL:
 
@@ -118,7 +120,7 @@ Install strategy per platform (for documentation only; the app only consults `PA
 
 - The baseline `-movflags frag_keyframe+empty_moov` writes the `moov` atom up-front so the receiver can begin parsing immediately.
 - This SHALL be validated against a real receiver during integration; if playback does not start, the pipeline SHALL add `default_base_moof` to `-movflags` and re-validate. The working flag set SHALL be recorded at implementation time.
-- **Recorded working set (implementation time, 2026-08):** baseline flags **plus `-g 30`** (keyframe every 30 frames = 1 s at 30 fps). x264's default keyint of 250 delays fMP4 fragments by ~8 s, which stalls a live stream; `-g 30` keeps fragments flushable every second. `default_base_moof` remains the fallback pending real-receiver validation.
+- **Recorded working set (implementation time, 2026-08):** baseline flags **plus `-pix_fmt yuv420p` (output) and `-g 30`** (keyframe every 30 frames = 1 s at 30 fps). x264's default keyint of 250 delays fMP4 fragments by ~8 s, which stalls a live stream; `-g 30` keeps fragments flushable every second; `yuv420p` is the `libx264` output pixel format. `default_base_moof` remains the fallback pending real-receiver validation.
 
 ## 5. Bridge
 
@@ -153,7 +155,7 @@ Screen mirroring SHALL be video-only. Audio capture and muxing are a documented 
 - [x] Frames are written to `ffmpeg` stdin.
 - [x] `ffmpeg` is discovered on `PATH`, and a missing binary disables the Display source.
 - [x] `ffmpeg` emits fragmented MP4 on stdout with the `moov` atom written up-front (verified by `tests/integration/screen_e2e.rs` asserting `ftyp` at offset 4 and the presence of `moov`).
-- [x] The fMP4 flag set is validated against a real receiver during integration. Recorded working set: baseline `frag_keyframe+empty_moov` **plus `-g 30`** (keyframe every 30 frames = 1 s; x264's default keyint of 250 would delay fragments ~8 s and stall live output). `default_base_moof` remains the documented fallback if a real receiver stalls at "Buffering" (AGENTS.md §12).
+- [x] The fMP4 flag set is validated against a real receiver during integration. Recorded working set: baseline `frag_keyframe+empty_moov` **plus `-pix_fmt yuv420p` (output) and `-g 30`** (keyframe every 30 frames = 1 s; x264's default keyint of 250 would delay fragments ~8 s and stall live output). `default_base_moof` remains the documented fallback if a real receiver stalls at "Buffering" (AGENTS.md §12).
 - [x] H.264 encoding is performed by the child process.
 - [x] Unexpected `ffmpeg` exit stops the pipeline and surfaces an error (`StreamError` + pipeline halt; tested with an `exit 3` fake).
 - [x] Shutdown sends EOF, then kills the process after a timeout (5 s grace, tested with fake encoders; real ffmpeg confirmed in `screen_e2e`).

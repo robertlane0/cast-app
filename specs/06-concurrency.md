@@ -29,7 +29,8 @@ It contains at least these logical tasks:
 
 - listens for UDP multicast discovery traffic;
 - parses receiver advertisements;
-- owns the authoritative receiver list and pushes snapshots to the GUI via `BackendEvent::ReceiversUpdated`.
+- owns the authoritative receiver list and pushes snapshots to the GUI via `BackendEvent::ReceiversUpdated`;
+- a manual `IP[:port]` connection (`AppCommand::ManualConnect`) bypasses discovery and constructs a `CastDevice` directly in the supervisor, flowing through the same Cast and media-server rebinding path.
 
 #### Task B — Cast TLS connection
 

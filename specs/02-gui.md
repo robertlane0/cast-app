@@ -39,6 +39,23 @@ The panel SHALL render explicit states:
 
 Selecting a receiver SHALL dispatch `AppCommand::SelectReceiver`.
 
+A collapsible *Manual connection* disclosure SHALL be available above the
+discovery states for receivers not discoverable via mDNS (e.g. an Android TV
+emulator reached through `adb forward tcp:18009 tcp:8009` at
+`127.0.0.1:18009`). It SHALL provide:
+
+- an IP-address field accepting a literal IP or an `IP:port` string (so
+  `127.0.0.1:18009` can be pasted directly);
+- an optional port field defaulting to `8009` when empty;
+- a **Connect** action enabled when the IP field is non-empty, which validates
+  via `parse_manual_addr` (`DEFAULT_CAST_PORT = 8009`, port `0` rejected) and
+  on success dispatches `AppCommand::ManualConnect(SocketAddr)`;
+- inline validation errors and a hint when the default port will be used.
+
+`CastDevice::from_manual_addr` SHALL construct the manual device (`id` and
+`tofu_key` are `IP:port`, `name` is `Manual IP:port`) so TOFU pinning
+survives restarts.
+
 ### 3.2 Source Selection — center panel
 
 The source selector SHALL be tabbed.
@@ -116,6 +133,13 @@ struct CastDevice {
     tofu_key: String,    // TOFU pin key: TXT id= when advertised, else friendlyName+IP
 }
 
+impl CastDevice {
+    fn from_manual_addr(addr: std::net::SocketAddr) -> Self; // Manual IP:port device
+}
+
+const DEFAULT_CAST_PORT: u16 = 8009;
+fn parse_manual_addr(ip: &str, port_str: &str) -> Result<std::net::SocketAddr, String>;
+
 enum SourceTab {
     Display,
     LocalFile,
@@ -128,6 +152,7 @@ Commands sent from the GUI to the backend:
 ```rust
 enum AppCommand {
     SelectReceiver(CastDevice),
+    ManualConnect(std::net::SocketAddr), // direct IP[:port] without mDNS (§3.1)
     SelectSource(SourceTab),
     SelectDisplay(String),
     SelectFile(std::path::PathBuf),
@@ -139,6 +164,7 @@ enum AppCommand {
     Mute(bool),
     SetProxyPort(u16),
     Rescan, // re-run mDNS discovery (GUI Error-state retry action, §3.1)
+    BindFallback(bool), // answer the wildcard-bind consent prompt (§3.6)
 }
 ```
 
@@ -189,6 +215,7 @@ Backend work SHALL be dispatched through asynchronous channels and handled by th
 - [x] Dashboard renders on the main thread.
 - [x] Receiver list updates without blocking UI rendering.
 - [x] User can select a receiver.
+- [x] User can connect to a manual IP[:port] without mDNS (`ManualConnect`).
 - [x] User can switch among Display, Local File and Web URL source tabs.
 - [x] Display tab exposes available monitors.
 - [x] Local File tab invokes a native picker with media-type filters.

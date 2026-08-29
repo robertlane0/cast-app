@@ -31,7 +31,7 @@ Define the architecture for a Rust desktop application that discovers Google Cas
 
 Owns:
 
-- mDNS discovery
+- mDNS discovery and manual `IP[:port]` connection (`ManualConnect` when mDNS is unavailable, e.g. emulator via `adb forward`)
 - Cast receiver metadata extraction
 - TCP connection establishment
 - TLS wrapping
