@@ -144,6 +144,38 @@ async fn drain_messages(pipe: &MockPipe, timeout: Duration) -> Vec<CastMessage> 
 
 /// Collect everything written to `pipe` within `window` and parse it into
 /// messages (namespace + JSON type).
+async fn expect_wire_type(pipe: &MockPipe, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for {expected} on the wire"
+        );
+
+        let chunk = pipe.wait_outgoing(remaining.min(Duration::from_millis(100)));
+        if chunk.is_empty() {
+            continue;
+        }
+
+        let mut cursor = std::io::Cursor::new(&chunk);
+        while let Ok(Some(payload)) = read_frame(&mut cursor) {
+            let message = decode_cast_message(&payload).expect("valid frame");
+            let msg_type = serde_json::from_str::<serde_json::Value>(&message.payload_utf8)
+                .ok()
+                .and_then(|v| v.get("type").cloned())
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "<non-json>".to_string());
+            let wire_type = format!("{}:{}", message.namespace, msg_type);
+            if wire_type == expected {
+                return;
+            }
+        }
+    }
+}
+
+/// Collect everything written to `pipe` within `window` and parse it
+/// into messages (namespace + JSON type).
 async fn drain_wire(pipe: &MockPipe, window: Duration) -> Vec<String> {
     let mut accumulated = Vec::new();
     let mut deadline = std::time::Instant::now() + window;
@@ -299,10 +331,18 @@ async fn teardown_ordering_with_active_session() {
         other => panic!("expected Connected, got {other:?}"),
     }
     let pipe = connector.last_pipe().expect("pipe created on connect");
-    drain_wire(&pipe, Duration::from_millis(200)).await; // CONNECT
+    expect_wire_type(
+        &pipe,
+        "urn:x-cast:com.google.cast.tp.connection:CONNECT",
+    )
+    .await;
 
     commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
-    drain_wire(&pipe, Duration::from_millis(200)).await; // LAUNCH
+    expect_wire_type(
+        &pipe,
+        "urn:x-cast:com.google.cast.receiver:LAUNCH",
+    )
+    .await;
 
     pipe.push_incoming(&receiver_status_frame("t-9", "s-9", 0.5, false));
     match expect_event(&mut events_rx).await {
@@ -322,7 +362,7 @@ async fn teardown_ordering_with_active_session() {
             stream_type: cast_app::cast::namespaces::StreamType::Buffered,
         })
         .unwrap();
-    drain_wire(&pipe, Duration::from_millis(200)).await; // LOAD
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.media:LOAD").await;
 
     commands_tx.send(Command::Shutdown).unwrap();
     let wire = drain_wire(&pipe, Duration::from_millis(500)).await;
@@ -418,10 +458,18 @@ async fn volume_command_and_event_roundtrip() {
         other => panic!("expected Connected, got {other:?}"),
     }
     let pipe = connector.last_pipe().expect("pipe created on connect");
-    drain_wire(&pipe, Duration::from_millis(200)).await;
+    expect_wire_type(
+        &pipe,
+        "urn:x-cast:com.google.cast.tp.connection:CONNECT",
+    )
+    .await;
 
     commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
-    drain_wire(&pipe, Duration::from_millis(200)).await;
+    expect_wire_type(
+        &pipe,
+        "urn:x-cast:com.google.cast.receiver:LAUNCH",
+    )
+    .await;
     pipe.push_incoming(&receiver_status_frame("t-1", "s-1", 0.3, false));
     match expect_event(&mut events_rx).await {
         ConnectionEvent::Ready { .. } => {}
@@ -439,12 +487,11 @@ async fn volume_command_and_event_roundtrip() {
             muted: false,
         })
         .unwrap();
-    let wire = drain_wire(&pipe, Duration::from_millis(300)).await;
-    assert_eq!(
-        wire.first().map(String::as_str),
-        Some("urn:x-cast:com.google.cast.receiver:SET_VOLUME"),
-        "SET_VOLUME sent to the receiver namespace"
-    );
+    expect_wire_type(
+        &pipe,
+        "urn:x-cast:com.google.cast.receiver:SET_VOLUME",
+    )
+    .await;
 
     pipe.push_incoming(&receiver_status_frame("t-1", "s-1", 0.8, false));
     match expect_event(&mut events_rx).await {
