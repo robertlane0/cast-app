@@ -4,3 +4,11 @@
 .vscode/
 .DS_Store
 job-logs.txt
+
+# cargo fuzz artifacts (never commit corpora, crashes, build outputs)
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/target/
+fuzz/Cargo.lock
+fuzz/*.log

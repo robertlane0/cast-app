@@ -121,6 +121,7 @@ path = "tests/integration/smb_e2e.rs"
 
 [workspace]
 members = ["xtask"]
+exclude = ["fuzz"]
 
 [profile.release]
 lto = "thin"
