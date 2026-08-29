@@ -331,18 +331,10 @@ async fn teardown_ordering_with_active_session() {
         other => panic!("expected Connected, got {other:?}"),
     }
     let pipe = connector.last_pipe().expect("pipe created on connect");
-    expect_wire_type(
-        &pipe,
-        "urn:x-cast:com.google.cast.tp.connection:CONNECT",
-    )
-    .await;
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.tp.connection:CONNECT").await;
 
     commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
-    expect_wire_type(
-        &pipe,
-        "urn:x-cast:com.google.cast.receiver:LAUNCH",
-    )
-    .await;
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.receiver:LAUNCH").await;
 
     pipe.push_incoming(&receiver_status_frame("t-9", "s-9", 0.5, false));
     match expect_event(&mut events_rx).await {
@@ -458,18 +450,10 @@ async fn volume_command_and_event_roundtrip() {
         other => panic!("expected Connected, got {other:?}"),
     }
     let pipe = connector.last_pipe().expect("pipe created on connect");
-    expect_wire_type(
-        &pipe,
-        "urn:x-cast:com.google.cast.tp.connection:CONNECT",
-    )
-    .await;
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.tp.connection:CONNECT").await;
 
     commands_tx.send(Command::LaunchDefaultReceiver).unwrap();
-    expect_wire_type(
-        &pipe,
-        "urn:x-cast:com.google.cast.receiver:LAUNCH",
-    )
-    .await;
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.receiver:LAUNCH").await;
     pipe.push_incoming(&receiver_status_frame("t-1", "s-1", 0.3, false));
     match expect_event(&mut events_rx).await {
         ConnectionEvent::Ready { .. } => {}
@@ -487,11 +471,7 @@ async fn volume_command_and_event_roundtrip() {
             muted: false,
         })
         .unwrap();
-    expect_wire_type(
-        &pipe,
-        "urn:x-cast:com.google.cast.receiver:SET_VOLUME",
-    )
-    .await;
+    expect_wire_type(&pipe, "urn:x-cast:com.google.cast.receiver:SET_VOLUME").await;
 
     pipe.push_incoming(&receiver_status_frame("t-1", "s-1", 0.8, false));
     match expect_event(&mut events_rx).await {
