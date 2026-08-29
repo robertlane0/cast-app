@@ -280,7 +280,7 @@ pub fn run_capture<S: FrameSource>(
             }
         }
         frame_count += 1;
-        if frame_count % MONITOR_REACQUIRE_INTERVAL == 0 {
+        if frame_count.is_multiple_of(MONITOR_REACQUIRE_INTERVAL) {
             if let Err(error) = source.reacquire() {
                 reacquire_failures += 1;
                 tracing::warn!(reacquire_failures, %error, "monitor re-acquire failed");

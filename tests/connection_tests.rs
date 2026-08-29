@@ -945,11 +945,11 @@ async fn outbound_commands_not_starved_by_heavy_inbound_traffic() {
     // and the burst would legitimately take ~500ms, which is not the
     // fairness property we are testing here.
     let concurrent_start = Instant::now();
-    for i in 0..5 {
+    for i in 0..5usize {
         commands_tx
             .send(Command::SetVolume {
                 level: 0.5 + 0.01 * i as f32,
-                muted: i % 2 == 0,
+                muted: i.is_multiple_of(2),
             })
             .unwrap();
     }
