@@ -32,9 +32,7 @@ deny = [
 # RUSTSEC-2026-0009 (time RFC 2822 stack exhaustion) was ignored while the
 # fixed time release required Rust 1.88; the advisory no longer matches the
 # locked tree, so the ignore entry has been dropped.
-ignore = [
-    "RUSTSEC-2026-0192",
-]
+ignore = []
 
 [licenses]
 allow = [
